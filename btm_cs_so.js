@@ -97,21 +97,21 @@ define(['N/currentRecord', 'N/search', 'N/format', 'N/runtime', 'N/record', 'N/h
                         line: i
                     });
 
-                    const quantityFulfilled = currentRecord.getSublistValue({
+                    const quantityBilled = currentRecord.getSublistValue({
                         sublistId: 'item',
-                        fieldId: 'quantityfulfilled',
+                        fieldId: 'quantitybilled',
                         line: i
                     });
 
                     if (itemName && itemName.includes('00401')) {
                         log.debug('Item Found', `The item "${itemName}" includes "00401" on line ${i + 1}.`);
 
-                        // Check if quantity minus quantity fulfilled is greater than 0
-                        if ((quantity - quantityFulfilled) > 0) {
-                            log.debug('Quantity Remaining Check', `For item "${itemName}" on line ${i + 1}, quantity (${quantity}) minus quantity fulfilled (${quantityFulfilled}) is greater than 0.`);
+                        // Check if quantity minus quantity billed is greater than 0
+                        if ((quantity - quantityBilled) > 0) {
+                            log.debug('Quantity Remaining Check', `For item "${itemName}" on line ${i + 1}, quantity (${quantity}) minus quantity billed (${quantityBilled}) is greater than 0.`);
                             return true; // Exit early if the condition is met
                         } else {
-                            log.debug('Quantity Remaining Check', `For item "${itemName}" on line ${i + 1}, quantity (${quantity}) minus quantity fulfilled (${quantityFulfilled}) is not greater than 0.`);
+                            log.debug('Quantity Remaining Check', `For item "${itemName}" on line ${i + 1}, quantity (${quantity}) minus quantity billed (${quantityBilled}) is not greater than 0.`);
                         }
                     }
                 }
@@ -777,70 +777,70 @@ define(['N/currentRecord', 'N/search', 'N/format', 'N/runtime', 'N/record', 'N/h
  * @param {string} shipDate - The ship date value.
  * @param {number} shippingDistance - The shipping distance in miles.
  */
-function analyzeDistance(currentRecord, shipDate, shippingDistance) {
-    try {
-        const dayOfWeek = new Date(shipDate).getDay(); // 0 = Sunday, 1 = Monday, ..., 6 = Saturday
-        log.debug('analyzeDistance', `Day of Week: ${dayOfWeek}`);
+        function analyzeDistance(currentRecord, shipDate, shippingDistance) {
+            try {
+                const dayOfWeek = new Date(shipDate).getDay(); // 0 = Sunday, 1 = Monday, ..., 6 = Saturday
+                log.debug('analyzeDistance', `Day of Week: ${dayOfWeek}`);
 
-        const { isRoleActiveBlackoutDate } = blackoutDatesLib;
-        const currentRole = runtime.getCurrentUser().role;
+                const { isRoleActiveBlackoutDate } = blackoutDatesLib;
+                const currentRole = runtime.getCurrentUser().role;
 
-        if (isRoleActiveBlackoutDate({ idRole: currentRole })) {
-            // Monday rule for blackout roles
-            if (dayOfWeek === 1 && shippingDistance > 35) { // 1 = Monday
-                log.debug('analyzeDistance', 'Ship Date is Monday and distance is greater than 35 miles. Clearing ship date.');
-                alert("Delivery distance on Monday is limited to 35 miles. The ship date has been cleared.");
-                clearShipDate(currentRecord, null, 'shipdate');
-            }
-            // Existing 70-85 mile rule for blackout roles
-            else if (shippingDistance >= 70 && shippingDistance <= 85) {
-                log.debug('analyzeDistance', 'Shipping distance is between 70 and 85 miles.');
-                if (dayOfWeek === 4) { // 4 = Thursday
-                    log.debug('analyzeDistance', 'Ship Date is a Thursday. Displaying alert for conditions.');
-                    alert("Please Remember This is Outside of Our Covered Service Area and Will Be Serviced by a 3rd Party. The Following Conditions Must be Met When Scheduling Between 70 - 85 Miles: Mandatory $49.95 Delivery Fee, Additional $199.95 Per Trip Fee (use code LONGR), and Field Measure or VFM is Required");
+                if (isRoleActiveBlackoutDate({ idRole: currentRole })) {
+                    // Monday rule for blackout roles
+                    if (dayOfWeek === 1 && shippingDistance > 35) { // 1 = Monday
+                        log.debug('analyzeDistance', 'Ship Date is Monday and distance is greater than 35 miles. Clearing ship date.');
+                        alert("Delivery distance on Monday is limited to 35 miles. The ship date has been cleared.");
+                        clearShipDate(currentRecord, null, 'shipdate');
+                    }
+                    // Existing 70-85 mile rule for blackout roles
+                    else if (shippingDistance >= 70 && shippingDistance <= 85) {
+                        log.debug('analyzeDistance', 'Shipping distance is between 70 and 85 miles.');
+                        if (dayOfWeek === 4) { // 4 = Thursday
+                            log.debug('analyzeDistance', 'Ship Date is a Thursday. Displaying alert for conditions.');
+                            alert("Please Remember This is Outside of Our Covered Service Area and Will Be Serviced by a 3rd Party. The Following Conditions Must be Met When Scheduling Between 70 - 85 Miles: Mandatory $49.95 Delivery Fee, Additional $199.95 Per Trip Fee (use code LONGR), and Field Measure or VFM is Required");
+                        } else {
+                            log.debug('analyzeDistance', 'Ship Date is not a Thursday. Clearing ship date.');
+                            alert("Delivery distances between 70-85 miles require a Thursday delivery. The ship date has been cleared.");
+                            clearShipDate(currentRecord, null, 'shipdate');
+                        }
+                    }
+                    // Existing >85 mile rule for blackout roles
+                    else if (shippingDistance > 85) {
+                        log.debug('analyzeDistance', 'Shipping distance is greater than 85 miles. Clearing ship date.');
+                        alert("Delivery distances greater than 85 miles are not permitted. Your ship date has been cleared.");
+                        clearShipDate(currentRecord, null, 'shipdate');
+                    } else {
+                        log.debug('analyzeDistance', 'Shipping distance is within acceptable range.');
+                    }
                 } else {
-                    log.debug('analyzeDistance', 'Ship Date is not a Thursday. Clearing ship date.');
-                    alert("Delivery distances between 70-85 miles require a Thursday delivery. The ship date has been cleared.");
-                    clearShipDate(currentRecord, null, 'shipdate');
+                    // Monday rule for non-blackout roles
+                    if (dayOfWeek === 1 && shippingDistance > 35) { // 1 = Monday
+                        log.debug('analyzeDistance', 'Ship Date is Monday and distance is greater than 35 miles. Displaying alert but not clearing ship date based on role.');
+                        alert("Delivery distance on Monday is limited to 35 miles. Based on your user role, the ship date has not been cleared, but proceed with caution.");
+                    }
+                    // Existing 70-85 mile rule for non-blackout roles
+                    else if (shippingDistance >= 70 && shippingDistance <= 85) {
+                        log.debug('analyzeDistance', 'Shipping distance is between 70 and 85 miles.');
+                        if (dayOfWeek === 4) { // 4 = Thursday
+                            log.debug('analyzeDistance', 'Ship Date is a Thursday. Displaying alert for conditions.');
+                            alert("Please Remember This is Outside of Our Covered Service Area and Will Be Serviced by a 3rd Party. The Following Conditions Must be Met When Scheduling Between 70 - 85 Miles: Mandatory $49.95 Delivery Fee, Additional $199.95 Per Trip Fee (use code LONGR), and Field Measure or VFM is Required");
+                        } else {
+                            log.debug('analyzeDistance', 'Ship Date is not a Thursday. Displaying alert but not clearing ship date based on role.');
+                            alert("Delivery distances between 70-85 miles require a Thursday delivery. Based on your user role, the ship date has not been cleared, but proceed with caution.");
+                        }
+                    }
+                    // Existing >85 mile rule for non-blackout roles
+                    else if (shippingDistance > 85) {
+                        log.debug('analyzeDistance', 'Shipping distance is greater than 85 miles. Displaying alert but not clearing ship date.');
+                        alert("Delivery distances greater than 85 miles are not permitted. Based on your user role, the ship date has not been cleared, but proceed with caution.");
+                    } else {
+                        log.debug('analyzeDistance', 'Shipping distance is within acceptable range.');
+                    }
                 }
-            }
-            // Existing >85 mile rule for blackout roles
-            else if (shippingDistance > 85) {
-                log.debug('analyzeDistance', 'Shipping distance is greater than 85 miles. Clearing ship date.');
-                alert("Delivery distances greater than 85 miles are not permitted. Your ship date has been cleared.");
-                clearShipDate(currentRecord, null, 'shipdate');
-            } else {
-                log.debug('analyzeDistance', 'Shipping distance is within acceptable range.');
-            }
-        } else {
-            // Monday rule for non-blackout roles
-            if (dayOfWeek === 1 && shippingDistance > 35) { // 1 = Monday
-                log.debug('analyzeDistance', 'Ship Date is Monday and distance is greater than 35 miles. Displaying alert but not clearing ship date based on role.');
-                alert("Delivery distance on Monday is limited to 35 miles. Based on your user role, the ship date has not been cleared, but proceed with caution.");
-            }
-            // Existing 70-85 mile rule for non-blackout roles
-            else if (shippingDistance >= 70 && shippingDistance <= 85) {
-                log.debug('analyzeDistance', 'Shipping distance is between 70 and 85 miles.');
-                if (dayOfWeek === 4) { // 4 = Thursday
-                    log.debug('analyzeDistance', 'Ship Date is a Thursday. Displaying alert for conditions.');
-                    alert("Please Remember This is Outside of Our Covered Service Area and Will Be Serviced by a 3rd Party. The Following Conditions Must be Met When Scheduling Between 70 - 85 Miles: Mandatory $49.95 Delivery Fee, Additional $199.95 Per Trip Fee (use code LONGR), and Field Measure or VFM is Required");
-                } else {
-                    log.debug('analyzeDistance', 'Ship Date is not a Thursday. Displaying alert but not clearing ship date based on role.');
-                    alert("Delivery distances between 70-85 miles require a Thursday delivery. Based on your user role, the ship date has not been cleared, but proceed with caution.");
-                }
-            }
-            // Existing >85 mile rule for non-blackout roles
-            else if (shippingDistance > 85) {
-                log.debug('analyzeDistance', 'Shipping distance is greater than 85 miles. Displaying alert but not clearing ship date.');
-                alert("Delivery distances greater than 85 miles are not permitted. Based on your user role, the ship date has not been cleared, but proceed with caution.");
-            } else {
-                log.debug('analyzeDistance', 'Shipping distance is within acceptable range.');
+            } catch (e) {
+                log.error('Error in analyzeDistance', e);
             }
         }
-    } catch (e) {
-        log.error('Error in analyzeDistance', e);
-    }
-}
 
         return {
             pageInit,
