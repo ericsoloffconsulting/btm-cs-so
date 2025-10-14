@@ -18,6 +18,7 @@
  * 1.6       2024-05-17   Eric Soloff Consulting      - Added Back 1.2 Function for Add-On Date Functionality with customsearch2936
  * 1.7       2025-08-08   Eric Soloff Consulting      - Added 1.2.1 Function for Add-On Date Functionality with customsearch7521 for Whitt Electric on fieldChanged and validateLine
  * 1.8       2025-08-12   Eric Soloff Consulting      - Shipping Distance Calculation with Google Distance Matrix API on fieldChanged and saveRecord, see functions getDistance and clearShipDate
+ * 1.9       2025-10-13   Eric Soloff Consulting      - Added Wells Fargo Kitchen Works Payment Terms Logic on saveRecord and function checkWellsFargoKitchenWorks
  */
 
 /**`
@@ -194,6 +195,7 @@ define(['N/currentRecord', 'N/search', 'N/format', 'N/runtime', 'N/record', 'N/h
         const fieldChanged = (scriptContext) => {
             const { fieldId, sublistId } = scriptContext;
             let currentRecord = currentRecordModule.get();
+
 
             // 1.8 - Shipping Distance Calculation with Google Distance Matrix API
             try {
@@ -627,7 +629,16 @@ define(['N/currentRecord', 'N/search', 'N/format', 'N/runtime', 'N/record', 'N/h
          * @since 2015.2
          */
         const saveRecord = (scriptContext) => {
-
+            try {
+                // 1.9 - Wells Fargo Kitchen Works Payment Terms Logic on saveRecord only for Sales Order
+                if (scriptContext.currentRecord.type === record.Type.SALES_ORDER) {
+                    checkWellsFargoKitchenWorks(scriptContext.currentRecord);
+                }
+                return true;
+            } catch (e) {
+                log.error('Error in saveRecord', e);
+                return true;
+            }
         };
 
         /**
@@ -842,6 +853,97 @@ define(['N/currentRecord', 'N/search', 'N/format', 'N/runtime', 'N/record', 'N/h
             }
         }
 
+        /**
+         * Helper function to check if a Wells Fargo Financing order contains Kitchen Works cabinet inventory items
+         * and set the custbody_kw_materials_order checkbox accordingly. Only processes if terms is Wells Fargo 
+         * Financing (ID 8) and the checkbox is not already set to true. Scans item lines for location Kitchen Works
+         * (ID 17) and validates if the item's asset account is Inventory - Cabinets (ID 726).
+         *
+         * @param {Object} currentRecord - The current record object (Sales Order)
+         * @returns {void} - No return value, modifies the record directly
+         * 
+         * @since 2025.2
+         */
+
+        function checkWellsFargoKitchenWorks(currentRecord) {
+            try {
+                log.debug('checkWellsFargoKitchenWorks', 'Starting Wells Fargo Kitchen Works validation');
+
+                // Check if terms is Wells Fargo Financing (ID 8)
+                const termsId = currentRecord.getValue('terms');
+                log.debug('checkWellsFargoKitchenWorks', `Terms ID: ${termsId}`);
+
+                if (termsId !== '8' && termsId !== 8) {
+                    log.debug('checkWellsFargoKitchenWorks', 'Not Wells Fargo Financing, exiting early');
+                    return; // Not Wells Fargo Financing, exit early
+                }
+
+                // Check if already set to true
+                const kwMaterialsOrder = currentRecord.getValue('custbody_kw_materials_order');
+                log.debug('checkWellsFargoKitchenWorks', `Current custbody_kw_materials_order value: ${kwMaterialsOrder}`);
+
+                if (kwMaterialsOrder === true) {
+                    log.debug('checkWellsFargoKitchenWorks', 'Checkbox already set to true, exiting early');
+                    return; // Already true, no need to check
+                }
+
+                // Scan items for Kitchen Works + Cabinet inventory
+                const lineCount = currentRecord.getLineCount({ sublistId: 'item' });
+                log.debug('checkWellsFargoKitchenWorks', `Scanning ${lineCount} item lines`);
+
+                for (let i = 0; i < lineCount; i++) {
+                    const locationId = currentRecord.getSublistValue({
+                        sublistId: 'item',
+                        fieldId: 'location',
+                        line: i
+                    });
+
+                    log.debug('checkWellsFargoKitchenWorks', `Line ${i + 1}: Location ID = ${locationId}`);
+
+                    // location id 17 = Kitchen Works
+                    if (locationId === '17' || locationId === 17) {
+                        log.debug('checkWellsFargoKitchenWorks', `Line ${i + 1}: Kitchen Works location found`);
+
+                        const itemId = currentRecord.getSublistValue({
+                            sublistId: 'item',
+                            fieldId: 'item',
+                            line: i
+                        });
+
+                        if (itemId) {
+                            log.debug('checkWellsFargoKitchenWorks', `Line ${i + 1}: Item ID = ${itemId}, checking asset account`);
+
+                            const itemFields = search.lookupFields({
+                                type: search.Type.ITEM,
+                                id: itemId,
+                                columns: ['assetaccount']
+                            });
+
+                            const assetAccountId = itemFields.assetaccount[0]?.value;
+                            log.debug('checkWellsFargoKitchenWorks', `Line ${i + 1}: Asset Account ID = ${assetAccountId}`);
+
+                            // asset account id 726 = Inventory - Cabinets
+                            if (assetAccountId === '726' || assetAccountId === 726) {
+                                log.debug('checkWellsFargoKitchenWorks', `Line ${i + 1}: Cabinet inventory found! Setting custbody_kw_materials_order to true`);
+                                currentRecord.setValue({
+                                    fieldId: 'custbody_kw_materials_order',
+                                    value: true
+                                });
+                                log.debug('checkWellsFargoKitchenWorks', 'Checkbox successfully set to true, exiting function');
+                                return; // Exit early, found what we need
+                            } else {
+                                log.debug('checkWellsFargoKitchenWorks', `Line ${i + 1}: Kitchen Works location but not cabinet inventory`);
+                            }
+                        }
+                    }
+                }
+
+                log.debug('checkWellsFargoKitchenWorks', 'Completed scan - no qualifying Kitchen Works cabinet items found');
+            } catch (e) {
+                log.error('Error in checkWellsFargoKitchenWorks', e);
+            }
+        }
+
         return {
             pageInit,
             fieldChanged,
@@ -852,7 +954,7 @@ define(['N/currentRecord', 'N/search', 'N/format', 'N/runtime', 'N/record', 'N/h
             validateLine,
             // validateInsert,
             // validateDelete,
-            // saveRecord
+            saveRecord
         };
 
     });
