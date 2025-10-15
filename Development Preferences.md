@@ -54,131 +54,249 @@ var paymentRecord = record.transform({
     fromType: record.Type.INVOICE,
     fromId: invoiceId,
     toType: record.Type.CUSTOMER_PAYMENT,
-    isDynamic: true  // Required for apply sublist manipulation
+    isDynamic: true  // CRITICAL: Required for apply sublist manipulation
 });
 ```
 
-### Apply Sublist Manipulation - Critical Steps
-1. **Always Clear Auto-Selected Lines First**: Transform auto-selects the source invoice, clear all selections before applying your logic
-2. **Use Proper Field Names**: Use `'doc'` field for internal ID matching, not `'internalid'`
-3. **Set Both Apply Flag and Amount**: Must set both `'apply'` (boolean) and `'amount'` (number) fields
-4. **Handle Errors Gracefully**: Wrap apply operations in try-catch blocks as NetSuite can be inconsistent
+### Dynamic Mode vs. Standard Mode - Critical Distinction
 
-### Correct Apply Sublist Pattern
+#### When to Use Dynamic Mode (`isDynamic: true`)
+- **Required for sublist manipulation**: When you need to modify apply sublist amounts or selections
+- **Enables current line methods**: Provides access to `selectLine()`, `getCurrentSublistValue()`, `setCurrentSublistValue()`, `commitLine()`
+- **Use Case**: Partial payment application, custom amount application, multi-invoice payment scenarios
+
+#### When to Use Standard Mode (`isDynamic: false` or omitted)
+- **Simple field updates**: When only setting header fields without sublist changes
+- **Bulk operations**: Better performance for operations that don't require line-by-line interaction
+- **Use Case**: Loading records to read values, simple field updates via `submitFields()`
+
+### Apply Sublist Manipulation in Dynamic Mode - Critical Pattern
+
+**Key Insight**: When transforming an invoice to a payment in dynamic mode, NetSuite automatically:
+1. Populates the apply sublist with available open transactions
+2. Pre-selects and applies the full amount to the source invoice
+3. Requires dynamic mode methods (`selectLine`, `getCurrentSublistValue`, etc.) to modify line values
+
+#### Correct Dynamic Mode Pattern for Custom Amount Application
+
 ```javascript
-// STEP 1: Clear all auto-selected apply lines
+// After transforming invoice to payment with isDynamic: true
+
+// STEP 1: Set payment header amount FIRST
+// This establishes the total amount available for application
+paymentRecord.setValue({
+    fieldId: 'payment',
+    value: customAmount
+});
+
+// STEP 2: Locate and modify the apply sublist line
 var applyLineCount = paymentRecord.getLineCount({
     sublistId: 'apply'
 });
 
-for (var clearLine = 0; clearLine < applyLineCount; clearLine++) {
-    try {
-        var isApplied = paymentRecord.getSublistValue({
-            sublistId: 'apply',
-            fieldId: 'apply',
-            line: clearLine
-        });
-
-        if (isApplied) {
-            paymentRecord.setSublistValue({
-                sublistId: 'apply',
-                fieldId: 'apply',
-                line: clearLine,
-                value: false
-            });
-
-            paymentRecord.setSublistValue({
-                sublistId: 'apply',
-                fieldId: 'amount',
-                line: clearLine,
-                value: 0
-            });
-        }
-    } catch (clearError) {
-        // Log but continue - some lines may not be clearable
-        log.debug('Could not clear apply line', clearError.toString());
-    }
-}
-
-// STEP 2: Find and select target invoice(s)
+var foundInvoice = false;
 for (var line = 0; line < applyLineCount; line++) {
-    var applyInternalId = paymentRecord.getSublistValue({
+    // DYNAMIC MODE: Select the line before reading/writing
+    paymentRecord.selectLine({
         sublistId: 'apply',
-        fieldId: 'doc',  // Use 'doc' not 'internalid'
         line: line
     });
 
-    if (parseInt(applyInternalId, 10) === parseInt(targetInvoiceId, 10)) {
-        // Select this line for application
-        paymentRecord.setSublistValue({
+    // DYNAMIC MODE: Use getCurrentSublistValue to read
+    var docId = paymentRecord.getCurrentSublistValue({
+        sublistId: 'apply',
+        fieldId: 'doc'
+    });
+
+    if (parseInt(docId, 10) === parseInt(targetInvoiceId, 10)) {
+        foundInvoice = true;
+
+        // DYNAMIC MODE: Use setCurrentSublistValue to write
+        paymentRecord.setCurrentSublistValue({
             sublistId: 'apply',
             fieldId: 'apply',
-            line: line,
             value: true
         });
 
-        // Set the amount to apply
-        paymentRecord.setSublistValue({
+        paymentRecord.setCurrentSublistValue({
             sublistId: 'apply',
             fieldId: 'amount',
-            line: line,
-            value: amountToApply
+            value: customAmount
         });
+
+        // CRITICAL: Commit the line to save changes
+        paymentRecord.commitLine({
+            sublistId: 'apply'
+        });
+
         break;
     }
 }
 ```
 
-### Common Pitfalls to Avoid
-- **Don't use `setSublistValue` on new payment records**: Only works after transform or when apply sublist is populated
-- **Don't assume apply sublist exists**: Check line count before attempting manipulation
-- **Don't skip the clear step**: Auto-selected lines can interfere with your intended applications
-- **Don't use wrong field names**: `'doc'` field contains internal IDs, not `'internalid'`
-- **Don't forget isDynamic: true**: Required for sublist manipulation
+### Standard Mode vs Dynamic Mode - Method Differences
 
-### Multiple Invoice Application Pattern
+| Operation | Standard Mode (`isDynamic: false`) | Dynamic Mode (`isDynamic: true`) |
+|-----------|-----------------------------------|----------------------------------|
+| **Read sublist value** | `getSublistValue({sublistId, fieldId, line})` | `selectLine({sublistId, line})`<br/>`getCurrentSublistValue({sublistId, fieldId})` |
+| **Write sublist value** | `setSublistValue({sublistId, fieldId, line, value})` | `selectLine({sublistId, line})`<br/>`setCurrentSublistValue({sublistId, fieldId, value})`<br/>`commitLine({sublistId})` |
+| **Add new line** | `insertLine({sublistId, line})` | `selectNewLine({sublistId})` |
+| **Remove line** | `removeLine({sublistId, line})` | `removeLine({sublistId, line})` (same) |
+| **Performance** | Faster for bulk operations | Slower but provides validation |
+| **Use Case** | Simple read/write operations | Interactive line-by-line modifications |
+
+### Common Pitfalls to Avoid
+
+1. **Don't mix standard and dynamic mode methods**
+   ```javascript
+   // WRONG: Using standard mode method on dynamic record
+   paymentRecord.setSublistValue({
+       sublistId: 'apply',
+       fieldId: 'amount',
+       line: 0,
+       value: amount
+   }); // Will fail with "setSublistValue is not a function"
+
+   // CORRECT: Use dynamic mode methods
+   paymentRecord.selectLine({sublistId: 'apply', line: 0});
+   paymentRecord.setCurrentSublistValue({
+       sublistId: 'apply',
+       fieldId: 'amount',
+       value: amount
+   });
+   paymentRecord.commitLine({sublistId: 'apply'});
+   ```
+
+2. **Don't forget `commitLine()` in dynamic mode**
+   - Changes to sublist lines are not saved until `commitLine()` is called
+   - This is the most common cause of "changes not applied" issues
+
+3. **Don't assume apply sublist exists**
+   - Always check `getLineCount()` before attempting manipulation
+   - Newly created payments may have empty apply sublists
+
+4. **Set payment header amount BEFORE modifying apply lines**
+   - NetSuite validates that applied amounts don't exceed payment amount
+   - Setting header amount first prevents validation errors
+
+5. **Use correct field names**
+   - Use `'doc'` field for internal ID matching, not `'internalid'`
+   - Field names are case-sensitive
+
+### Transform Behavior - Automatic Apply Selection
+
+When you transform an invoice to a payment:
+- **Auto-population**: NetSuite populates the apply sublist with ALL open transactions for that customer
+- **Auto-selection**: The source invoice is automatically checked for application
+- **Auto-amount**: The full invoice balance is set as the apply amount
+- **Result**: If you don't modify the apply sublist, the payment will apply the full invoice amount
+
+**To apply a custom (partial) amount**:
+1. Set the payment header amount to your custom amount
+2. Find the invoice line in the apply sublist
+3. Update the apply amount to match your payment amount
+4. Any difference becomes "unapplied" on the payment
+
+### Complete Working Example - Partial Payment Application
+
 ```javascript
-// For applying to multiple invoices, iterate through target invoices
-var targetInvoices = [
-    { id: 12345, amount: 1000.00 },
-    { id: 12346, amount: 500.00 }
-];
+// Find and transform invoice to payment
+var invoiceId = findInvoiceByNumber(customerId, invoiceNumber);
+var paymentRecord = record.transform({
+    fromType: record.Type.INVOICE,
+    fromId: invoiceId,
+    toType: record.Type.CUSTOMER_PAYMENT,
+    isDynamic: true  // REQUIRED for apply manipulation
+});
+
+// Set payment header fields
+paymentRecord.setValue({fieldId: 'trandate', value: new Date()});
+paymentRecord.setValue({fieldId: 'paymentmethod', value: 12}); // ACH
+paymentRecord.setValue({fieldId: 'memo', value: 'Partial payment'});
+
+// CRITICAL: Set payment amount BEFORE modifying apply
+var customAmount = 1000.00; // Partial amount (invoice may be $5000)
+paymentRecord.setValue({fieldId: 'payment', value: customAmount});
+
+// Modify apply sublist to match custom amount
+var applyLineCount = paymentRecord.getLineCount({sublistId: 'apply'});
 
 for (var line = 0; line < applyLineCount; line++) {
-    var applyInternalId = paymentRecord.getSublistValue({
+    paymentRecord.selectLine({sublistId: 'apply', line: line});
+    
+    var docId = paymentRecord.getCurrentSublistValue({
         sublistId: 'apply',
-        fieldId: 'doc',
-        line: line
+        fieldId: 'doc'
     });
 
-    // Check if this line matches any target invoice
-    for (var t = 0; t < targetInvoices.length; t++) {
-        if (parseInt(applyInternalId, 10) === parseInt(targetInvoices[t].id, 10)) {
-            paymentRecord.setSublistValue({
-                sublistId: 'apply',
-                fieldId: 'apply',
-                line: line,
-                value: true
-            });
+    if (parseInt(docId, 10) === parseInt(invoiceId, 10)) {
+        // Update the apply amount to match payment amount
+        paymentRecord.setCurrentSublistValue({
+            sublistId: 'apply',
+            fieldId: 'amount',
+            value: customAmount
+        });
 
-            paymentRecord.setSublistValue({
-                sublistId: 'apply',
-                fieldId: 'amount',
-                line: line,
-                value: targetInvoices[t].amount
-            });
-            break;
-        }
+        // Commit changes to this line
+        paymentRecord.commitLine({sublistId: 'apply'});
+        break;
     }
 }
+
+// Save the payment
+var paymentId = paymentRecord.save();
+// Result: $1000 payment applied to invoice, $4000 remains on invoice
 ```
 
 ### Error Handling and Validation
-- **Always validate invoice exists**: Use search to confirm invoice ID before transform
-- **Provide fallback to record.create()**: If transform fails, create new payment without application
-- **Log detailed information**: Include invoice IDs, amounts, and line numbers in debug logs
-- **Handle partial applications**: Allow payment creation even if apply operations fail
 
+```javascript
+try {
+    // Set payment amount
+    paymentRecord.setValue({fieldId: 'payment', value: amountFloat});
+
+    // Attempt to modify apply sublist
+    var applyLineCount = paymentRecord.getLineCount({sublistId: 'apply'});
+    
+    if (applyLineCount === 0) {
+        log.warning('No apply lines found', {
+            invoiceId: invoiceId,
+            message: 'Apply sublist is empty - payment will be unapplied'
+        });
+    } else {
+        // Process apply sublist...
+    }
+} catch (applyError) {
+    log.error('Error modifying apply sublist', {
+        error: applyError.message,
+        stack: applyError.stack,
+        invoiceId: invoiceId,
+        amount: amountFloat
+    });
+    // Continue - payment will still be created but may not be applied correctly
+}
+```
+
+### Best Practices Summary
+
+1. **Always use `isDynamic: true`** when transforming invoices to payments if you need to modify the apply amount
+2. **Set payment header amount first** before modifying apply sublist
+3. **Use dynamic mode methods consistently** - don't mix with standard mode methods
+4. **Always call `commitLine()`** after modifying a line in dynamic mode
+5. **Check `getLineCount()`** before attempting sublist operations
+6. **Log extensively** during development to understand sublist behavior
+7. **Handle errors gracefully** - allow payment creation even if apply modification fails
+8. **Test with various amounts** - full payment, partial payment, overpayment scenarios
+
+### Performance Considerations
+
+- **Dynamic mode is slower** than standard mode due to additional validation
+- **Use standard mode** for bulk operations that don't require line interaction
+- **Use dynamic mode** when you need to:
+  - Modify sublist amounts
+  - Apply custom payment amounts
+  - Handle complex multi-line scenarios
+  - Ensure field-level validation during entry
 ### Credit Application (Advanced Pattern)
 - **Use credit sublist for journal entries**: When applying credits from journal entries
 - **Match credit and apply amounts**: Ensure credit amount equals apply amount for zero net effect

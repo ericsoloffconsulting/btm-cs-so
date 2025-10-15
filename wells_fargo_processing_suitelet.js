@@ -139,17 +139,6 @@ define(['N/ui/serverWidget', 'N/search', 'N/log', 'N/url', 'N/record', 'N/redire
                             value: new Date()
                         });
 
-                        // Set payment amount
-                        depositRecord.setValue({
-                            fieldId: 'payment',
-                            value: amountFloat
-                        });
-
-                        // Set payment method (ACH)
-                        depositRecord.setValue({
-                            fieldId: 'paymentmethod',
-                            value: 12
-                        });
 
                         // Enhanced memo with more details
                         var memoText = 'Wells Fargo Customer Deposit - WF Auth #: ' + wfAuthNumber;
@@ -175,6 +164,18 @@ define(['N/ui/serverWidget', 'N/search', 'N/log', 'N/url', 'N/record', 'N/redire
                                 value: salesOrderIdInt
                             });
                         }
+
+                        // Set payment amount
+                        depositRecord.setValue({
+                            fieldId: 'payment',
+                            value: amountFloat
+                        });
+
+                        // Set payment method (ACH)
+                        depositRecord.setValue({
+                            fieldId: 'paymentmethod',
+                            value: 12
+                        });
 
                         // Save the Customer Deposit
                         var depositId = depositRecord.save();
@@ -326,12 +327,12 @@ define(['N/ui/serverWidget', 'N/search', 'N/log', 'N/url', 'N/record', 'N/redire
 
                     if (invoiceId) {
                         try {
-                            // Transform the invoice into a customer payment (like journal entry script)
+                            // Transform the invoice into a customer payment
                             paymentRecord = record.transform({
                                 fromType: record.Type.INVOICE,
                                 fromId: invoiceId,
                                 toType: record.Type.CUSTOMER_PAYMENT,
-                                isDynamic: true
+                                isDynamic: true  // Required for dynamic sublist manipulation
                             });
                             isTransformed = true;
 
@@ -377,12 +378,6 @@ define(['N/ui/serverWidget', 'N/search', 'N/log', 'N/url', 'N/record', 'N/redire
                             value: new Date()
                         });
 
-                        // Set payment amount
-                        paymentRecord.setValue({
-                            fieldId: 'payment',
-                            value: amountFloat
-                        });
-
                         // Set payment method (ACH)
                         paymentRecord.setValue({
                             fieldId: 'paymentmethod',
@@ -396,10 +391,22 @@ define(['N/ui/serverWidget', 'N/search', 'N/log', 'N/url', 'N/record', 'N/redire
                             value: memoText
                         });
 
+                        // CRITICAL: Set payment amount BEFORE applying to invoice
+                        // This ensures the payment header has the correct amount available
+                        paymentRecord.setValue({
+                            fieldId: 'payment',
+                            value: amountFloat
+                        });
+
+                        log.debug('Payment amount set', {
+                            amount: amountFloat,
+                            isTransformed: isTransformed
+                        });
+
                         // Apply payment to specific invoice if found and transformed
                         if (invoiceId && isTransformed) {
                             try {
-                                // STEP 1: Clear any auto-selected apply lines first (like journal entry script)
+                                // Get apply sublist line count
                                 var applyLineCount = paymentRecord.getLineCount({
                                     sublistId: 'apply'
                                 });
@@ -407,47 +414,25 @@ define(['N/ui/serverWidget', 'N/search', 'N/log', 'N/url', 'N/record', 'N/redire
                                 log.debug('Apply sublist info', {
                                     lineCount: applyLineCount,
                                     targetInvoiceId: invoiceId,
-                                    isTransformed: isTransformed
+                                    isTransformed: isTransformed,
+                                    paymentAmount: amountFloat
                                 });
 
-                                // Clear all auto-selected apply lines first
-                                for (var clearLine = 0; clearLine < applyLineCount; clearLine++) {
-                                    try {
-                                        var isApplied = paymentRecord.getSublistValue({
-                                            sublistId: 'apply',
-                                            fieldId: 'apply',
-                                            line: clearLine
-                                        });
+                                // For transformed records, the source invoice should already be on line 0
+                                // We need to update the amount being applied using DYNAMIC MODE methods
+                                var foundInvoice = false;
 
-                                        if (isApplied) {
-                                            paymentRecord.setSublistValue({
-                                                sublistId: 'apply',
-                                                fieldId: 'apply',
-                                                line: clearLine,
-                                                value: false
-                                            });
-
-                                            paymentRecord.setSublistValue({
-                                                sublistId: 'apply',
-                                                fieldId: 'amount',
-                                                line: clearLine,
-                                                value: 0
-                                            });
-                                        }
-                                    } catch (clearError) {
-                                        log.debug('Could not clear apply line', {
-                                            line: clearLine,
-                                            error: clearError.toString()
-                                        });
-                                    }
-                                }
-
-                                // STEP 2: Find and select the target invoice
                                 for (var line = 0; line < applyLineCount; line++) {
-                                    var applyInternalId = paymentRecord.getSublistValue({
+                                    // Select the line to work with it (DYNAMIC MODE REQUIRED)
+                                    paymentRecord.selectLine({
                                         sublistId: 'apply',
-                                        fieldId: 'doc',
                                         line: line
+                                    });
+
+                                    // Get the internal ID of the document on this line
+                                    var applyInternalId = paymentRecord.getCurrentSublistValue({
+                                        sublistId: 'apply',
+                                        fieldId: 'doc'
                                     });
 
                                     log.debug('Checking apply line', {
@@ -457,20 +442,40 @@ define(['N/ui/serverWidget', 'N/search', 'N/log', 'N/url', 'N/record', 'N/redire
                                     });
 
                                     if (parseInt(applyInternalId, 10) === parseInt(invoiceId, 10)) {
-                                        // Select this line for application
-                                        paymentRecord.setSublistValue({
+                                        foundInvoice = true;
+
+                                        // Get the current apply status
+                                        var isCurrentlyApplied = paymentRecord.getCurrentSublistValue({
                                             sublistId: 'apply',
-                                            fieldId: 'apply',
-                                            line: line,
-                                            value: true
+                                            fieldId: 'apply'
                                         });
 
-                                        // Set the amount to apply
-                                        paymentRecord.setSublistValue({
+                                        log.debug('Found target invoice on apply sublist', {
+                                            line: line,
+                                            invoiceId: invoiceId,
+                                            isCurrentlyApplied: isCurrentlyApplied,
+                                            requestedAmount: amountFloat
+                                        });
+
+                                        // Set apply flag to true (if not already)
+                                        if (!isCurrentlyApplied) {
+                                            paymentRecord.setCurrentSublistValue({
+                                                sublistId: 'apply',
+                                                fieldId: 'apply',
+                                                value: true
+                                            });
+                                        }
+
+                                        // Set the amount to apply (this updates the line amount)
+                                        paymentRecord.setCurrentSublistValue({
                                             sublistId: 'apply',
                                             fieldId: 'amount',
-                                            line: line,
                                             value: amountFloat
+                                        });
+
+                                        // Commit the line changes (DYNAMIC MODE REQUIRED)
+                                        paymentRecord.commitLine({
+                                            sublistId: 'apply'
                                         });
 
                                         log.debug('Applied payment to invoice', {
@@ -481,13 +486,23 @@ define(['N/ui/serverWidget', 'N/search', 'N/log', 'N/url', 'N/record', 'N/redire
                                         break;
                                     }
                                 }
+
+                                if (!foundInvoice) {
+                                    log.error('Target invoice not found on apply sublist', {
+                                        targetInvoiceId: invoiceId,
+                                        applyLineCount: applyLineCount
+                                    });
+                                }
+
                             } catch (applyError) {
                                 log.error('Error applying payment to invoice', {
                                     error: applyError.message,
+                                    stack: applyError.stack,
                                     invoiceId: invoiceId,
                                     amount: amountFloat
                                 });
                                 // Continue without applying - payment will still be created
+                                // but may have the full invoice amount applied instead of custom amount
                             }
                         }
 
@@ -652,10 +667,10 @@ define(['N/ui/serverWidget', 'N/search', 'N/log', 'N/url', 'N/record', 'N/redire
     }
 
     /**
-     * Builds HTML content containing both search results
-     * @param {Object} context - NetSuite context object containing request/response
-     * @returns {string} HTML content string
-     */
+   * Builds HTML content containing both search results
+   * @param {Object} context - NetSuite context object containing request/response
+   * @returns {string} HTML content string
+   */
     function buildSearchResultsHTML(context) {
         var html = '<style>' +
             // Reset NetSuite default styles and remove borders
@@ -687,9 +702,8 @@ define(['N/ui/serverWidget', 'N/search', 'N/log', 'N/url', 'N/record', 'N/redire
             '.success-msg { background-color: #d4edda; color: #155724; padding: 12px; border: 1px solid #c3e6cb; border-radius: 6px; margin: 15px 0; font-size: 13px; }' +
             '.error-msg { background-color: #f8d7da; color: #721c24; padding: 12px; border: 1px solid #f5c6cb; border-radius: 6px; margin: 15px 0; font-size: 13px; }' +
 
-            // Remove any unwanted spacing and borders
-            'form { margin: 0; padding: 0; display: inline-block; }' +
-            'input[type="hidden"] { display: none; }' +
+            // Hidden data containers
+            '.hidden-data { display: none; }' +
 
             // Ensure clean container
             'body, html { margin: 0; padding: 0; }' +
@@ -698,6 +712,86 @@ define(['N/ui/serverWidget', 'N/search', 'N/log', 'N/url', 'N/record', 'N/redire
         // Add inline JavaScript functions
         html += '<script>' +
             'function refreshPage() { window.location.reload(); }' +
+
+            // Prompt for deposit amount and submit
+            'function promptAndSubmitDeposit(dataId, defaultAmount) {' +
+            '    try {' +
+            '        var amount = window.prompt("Enter deposit amount:", defaultAmount);' +
+            '        if (amount === null) {' +
+            '            return;' +
+            '        }' +
+            '        var numAmount = parseFloat(amount);' +
+            '        if (isNaN(numAmount) || numAmount <= 0) {' +
+            '            alert("Please enter a valid amount greater than zero");' +
+            '            return;' +
+            '        }' +
+            '        numAmount = Math.round(numAmount * 100) / 100;' +
+            '        ' +
+            '        var dataContainer = document.getElementById(dataId);' +
+            '        if (!dataContainer) {' +
+            '            alert("Error: Data container not found - ID: " + dataId);' +
+            '            return;' +
+            '        }' +
+            '        ' +
+            '        var form = document.createElement("form");' +
+            '        form.method = "POST";' +
+            '        form.action = window.location.href;' +
+            '        ' +
+            '        var inputs = dataContainer.getElementsByTagName("input");' +
+            '        for (var i = 0; i < inputs.length; i++) {' +
+            '            var input = inputs[i].cloneNode(true);' +
+            '            if (input.name === "amount") {' +
+            '                input.value = numAmount.toFixed(2);' +
+            '            }' +
+            '            form.appendChild(input);' +
+            '        }' +
+            '        ' +
+            '        document.body.appendChild(form);' +
+            '        form.submit();' +
+            '    } catch (e) {' +
+            '        alert("Error: " + e.message);' +
+            '    }' +
+            '}' +
+
+            // Prompt for payment amount and submit
+            'function promptAndSubmitPayment(dataId, defaultAmount) {' +
+            '    try {' +
+            '        var amount = window.prompt("Enter payment amount:", defaultAmount);' +
+            '        if (amount === null) {' +
+            '            return;' +
+            '        }' +
+            '        var numAmount = parseFloat(amount);' +
+            '        if (isNaN(numAmount) || numAmount <= 0) {' +
+            '            alert("Please enter a valid amount greater than zero");' +
+            '            return;' +
+            '        }' +
+            '        numAmount = Math.round(numAmount * 100) / 100;' +
+            '        ' +
+            '        var dataContainer = document.getElementById(dataId);' +
+            '        if (!dataContainer) {' +
+            '            alert("Error: Data container not found - ID: " + dataId);' +
+            '            return;' +
+            '        }' +
+            '        ' +
+            '        var form = document.createElement("form");' +
+            '        form.method = "POST";' +
+            '        form.action = window.location.href;' +
+            '        ' +
+            '        var inputs = dataContainer.getElementsByTagName("input");' +
+            '        for (var i = 0; i < inputs.length; i++) {' +
+            '            var input = inputs[i].cloneNode(true);' +
+            '            if (input.name === "amount") {' +
+            '                input.value = numAmount.toFixed(2);' +
+            '            }' +
+            '            form.appendChild(input);' +
+            '        }' +
+            '        ' +
+            '        document.body.appendChild(form);' +
+            '        form.submit();' +
+            '    } catch (e) {' +
+            '        alert("Error: " + e.message);' +
+            '    }' +
+            '}' +
             '</script>';
 
         // Main container
@@ -726,7 +820,6 @@ define(['N/ui/serverWidget', 'N/search', 'N/log', 'N/url', 'N/record', 'N/redire
             html += '<div class="error-msg"><strong>Error:</strong> ' + escapeHtml(context.request.parameters.error) + '</div>';
         }
 
-
         // First Search: Wells Fargo Sales Order Customer Deposits
         html += '<div class="search-title">BAS Wells Fargo Sales Order Customer Deposits To Be Charged</div>';
         html += buildSearchTable('customsearch_bas_wells_fargo_so_cd', 10, 'deposit');
@@ -739,6 +832,136 @@ define(['N/ui/serverWidget', 'N/search', 'N/log', 'N/url', 'N/record', 'N/redire
         html += '</div>';
 
         return html;
+    }
+
+    /**
+     * Builds HTML table for a specific saved search
+     * @param {string} searchId - The saved search ID
+     * @param {number} expectedColumns - Expected number of columns to display
+     * @param {string} actionType - Type of action ('deposit' or 'payment')
+     * @returns {string} HTML table string
+     */
+    function buildSearchTable(searchId, expectedColumns, actionType) {
+        try {
+            var savedSearch = search.load({
+                id: searchId
+            });
+
+            var searchResults = savedSearch.run();
+            var resultsRange = searchResults.getRange({
+                start: 0,
+                end: 1000
+            });
+
+            if (resultsRange.length === 0) {
+                return '<div class="search-count">No results found</div>';
+            }
+
+            var html = '<div class="search-count">Results: ' + resultsRange.length + '</div>';
+            html += '<table class="search-table">';
+
+            // Build header row
+            html += '<thead><tr>';
+            html += '<th>Action</th>';
+            for (var col = 0; col < expectedColumns; col++) {
+                try {
+                    var columnLabel = resultsRange[0].columns[col] ?
+                        (resultsRange[0].columns[col].label || 'Column ' + (col + 1)) :
+                        'Column ' + (col + 1);
+                    html += '<th>' + escapeHtml(columnLabel) + '</th>';
+                } catch (e) {
+                    html += '<th>Column ' + (col + 1) + '</th>';
+                }
+            }
+            html += '</tr></thead>';
+
+            // Build data rows
+            html += '<tbody>';
+            for (var i = 0; i < resultsRange.length; i++) {
+                html += '<tr>';
+
+                if (actionType === 'deposit') {
+                    var mappedData = mapDepositColumns(resultsRange[i]);
+                    var dataId = 'deposit_data_' + i;
+
+                    html += '<td class="action-cell">';
+
+                    // Hidden data container (NO FORM TAG - just a div with data)
+                    html += '<div id="' + dataId + '" class="hidden-data">';
+                    html += '<input type="hidden" name="action" value="create_deposit">';
+                    html += '<input type="hidden" name="customer" value="' + escapeHtml(mappedData.customerId) + '">';
+                    html += '<input type="hidden" name="salesorder" value="' + escapeHtml(mappedData.salesOrderId) + '">';
+                    html += '<input type="hidden" name="amount" value="' + escapeHtml(mappedData.amount) + '">';
+                    html += '<input type="hidden" name="wfAuthId" value="' + escapeHtml(mappedData.wfAuthId) + '">';
+                    html += '<input type="hidden" name="location" value="' + escapeHtml(mappedData.location) + '">';
+                    html += '<input type="hidden" name="wfAuthNumber" value="' + escapeHtml(mappedData.wfAuthNumber) + '">';
+                    html += '</div>';
+
+                    // Button that calls JavaScript function
+                    html += '<button type="button" class="action-btn" onclick="promptAndSubmitDeposit(\'' + dataId + '\', \'' + escapeHtml(mappedData.amount) + '\')">Create Deposit</button>';
+                    html += '</td>';
+
+                } else if (actionType === 'payment') {
+                    var paymentData = extractRowData(resultsRange[i], actionType);
+                    var dataId = 'payment_data_' + i;
+
+                    html += '<td class="action-cell">';
+
+                    // Check if this is a Credit Memo
+                    if (paymentData.transactionType === 'Credit Memo') {
+                        html += '<span style="color: #666; font-style: italic; font-size: 11px;">Refund Manually</span>';
+                    } else {
+                        // Hidden data container (NO FORM TAG - just a div with data)
+                        html += '<div id="' + dataId + '" class="hidden-data">';
+                        html += '<input type="hidden" name="action" value="create_payment">';
+                        html += '<input type="hidden" name="customer" value="' + escapeHtml(paymentData.customerId) + '">';
+                        html += '<input type="hidden" name="amount" value="' + escapeHtml(paymentData.amount) + '">';
+                        html += '<input type="hidden" name="wfAuthNumber" value="' + escapeHtml(paymentData.wfAuthNumber) + '">';
+                        html += '<input type="hidden" name="invoiceNumber" value="' + escapeHtml(paymentData.invoiceNumber) + '">';
+                        html += '</div>';
+
+                        // Button that calls JavaScript function
+                        html += '<button type="button" class="action-btn" onclick="promptAndSubmitPayment(\'' + dataId + '\', \'' + escapeHtml(paymentData.amount) + '\')">Create Payment</button>';
+                    }
+
+                    html += '</td>';
+                }
+
+                // Add regular data columns with selective HTML rendering
+                for (var col = 0; col < expectedColumns; col++) {
+                    try {
+                        var cellValue = '';
+                        if (resultsRange[i].columns[col]) {
+                            cellValue = resultsRange[i].getValue(resultsRange[i].columns[col]) || '';
+                            var textValue = resultsRange[i].getText(resultsRange[i].columns[col]);
+                            if (textValue && textValue !== cellValue) {
+                                cellValue = textValue;
+                            }
+                        }
+
+                        // Check if this column should allow HTML rendering
+                        var columnLabel = resultsRange[i].columns[col] ?
+                            (resultsRange[i].columns[col].label || '') : '';
+
+                        if (shouldAllowHtmlRendering(columnLabel)) {
+                            html += '<td>' + sanitizeAllowedHtml(String(cellValue)) + '</td>';
+                        } else {
+                            html += '<td>' + escapeHtml(String(cellValue)) + '</td>';
+                        }
+                    } catch (e) {
+                        html += '<td>Error</td>';
+                    }
+                }
+                html += '</tr>';
+            }
+            html += '</tbody></table>';
+
+            return html;
+
+        } catch (e) {
+            log.error('Error building table for search ' + searchId, e.message);
+            return '<div class="error-msg">Error loading search ' + escapeHtml(searchId) + ': ' + escapeHtml(e.message) + '</div>';
+        }
     }
 
     /**
@@ -799,129 +1022,6 @@ define(['N/ui/serverWidget', 'N/search', 'N/log', 'N/url', 'N/record', 'N/redire
 
         return data;
     }
-
-    /**
-     * Builds HTML table for a specific saved search
-     * @param {string} searchId - The saved search ID
-     * @param {number} expectedColumns - Expected number of columns to display
-     * @param {string} actionType - Type of action ('deposit' or 'payment')
-     * @returns {string} HTML table string
-     */
-    function buildSearchTable(searchId, expectedColumns, actionType) {
-        try {
-            var savedSearch = search.load({
-                id: searchId
-            });
-
-            var searchResults = savedSearch.run();
-            var resultsRange = searchResults.getRange({
-                start: 0,
-                end: 1000
-            });
-
-            if (resultsRange.length === 0) {
-                return '<div class="search-count">No results found</div>';
-            }
-
-            var html = '<div class="search-count">Results: ' + resultsRange.length + '</div>';
-            html += '<table class="search-table">';
-
-            // Build header row
-            html += '<thead><tr>';
-            html += '<th>Action</th>';
-            for (var col = 0; col < expectedColumns; col++) {
-                try {
-                    var columnLabel = resultsRange[0].columns[col] ?
-                        (resultsRange[0].columns[col].label || 'Column ' + (col + 1)) :
-                        'Column ' + (col + 1);
-                    html += '<th>' + escapeHtml(columnLabel) + '</th>';
-                } catch (e) {
-                    html += '<th>Column ' + (col + 1) + '</th>';
-                }
-            }
-            html += '</tr></thead>';
-
-            // Build data rows
-            html += '<tbody>';
-            for (var i = 0; i < resultsRange.length; i++) {
-                html += '<tr>';
-
-                if (actionType === 'deposit') {
-                    var mappedData = mapDepositColumns(resultsRange[i]);
-
-                    html += '<td class="action-cell">';
-                    html += '<form method="POST">';
-                    html += '<input type="hidden" name="action" value="create_deposit">';
-                    html += '<input type="hidden" name="customer" value="' + escapeHtml(mappedData.customerId) + '">';
-                    html += '<input type="hidden" name="salesorder" value="' + escapeHtml(mappedData.salesOrderId) + '">';
-                    html += '<input type="hidden" name="amount" value="' + escapeHtml(mappedData.amount) + '">';
-                    html += '<input type="hidden" name="wfAuthId" value="' + escapeHtml(mappedData.wfAuthId) + '">';
-                    html += '<input type="hidden" name="location" value="' + escapeHtml(mappedData.location) + '">';
-                    html += '<input type="hidden" name="wfAuthNumber" value="' + escapeHtml(mappedData.wfAuthNumber) + '">';
-                    html += '<button type="submit" class="action-btn" onclick="return confirm(\'Create Customer Deposit for $' + escapeHtml(mappedData.amount) + '?\')">Create Deposit</button>';
-                    html += '</form>';
-                    html += '</td>';
-
-                } else if (actionType === 'payment') {
-                    var paymentData = extractRowData(resultsRange[i], actionType);
-
-                    html += '<td class="action-cell">';
-
-                    // Check if this is a Credit Memo
-                    if (paymentData.transactionType === 'Credit Memo') {
-                        html += '<span style="color: #666; font-style: italic; font-size: 11px;">Refund Manually</span>';
-                    } else {
-                        // Show Create Payment button for Invoices
-                        html += '<form method="POST">';
-                        html += '<input type="hidden" name="action" value="create_payment">';
-                        html += '<input type="hidden" name="customer" value="' + escapeHtml(paymentData.customerId) + '">';
-                        html += '<input type="hidden" name="amount" value="' + escapeHtml(paymentData.amount) + '">';
-                        html += '<input type="hidden" name="wfAuthNumber" value="' + escapeHtml(paymentData.wfAuthNumber) + '">';
-                        html += '<input type="hidden" name="invoiceNumber" value="' + escapeHtml(paymentData.invoiceNumber) + '">';
-                        html += '<button type="submit" class="action-btn" onclick="return confirm(\'Create Customer Payment for $' + escapeHtml(paymentData.amount) + '?\')">Create Payment</button>';
-                        html += '</form>';
-                    }
-
-                    html += '</td>';
-                }
-
-                // Add regular data columns with selective HTML rendering
-                for (var col = 0; col < expectedColumns; col++) {
-                    try {
-                        var cellValue = '';
-                        if (resultsRange[i].columns[col]) {
-                            cellValue = resultsRange[i].getValue(resultsRange[i].columns[col]) || '';
-                            var textValue = resultsRange[i].getText(resultsRange[i].columns[col]);
-                            if (textValue && textValue !== cellValue) {
-                                cellValue = textValue;
-                            }
-                        }
-
-                        // Check if this column should allow HTML rendering
-                        var columnLabel = resultsRange[i].columns[col] ?
-                            (resultsRange[i].columns[col].label || '') : '';
-
-                        if (shouldAllowHtmlRendering(columnLabel)) {
-                            html += '<td>' + sanitizeAllowedHtml(String(cellValue)) + '</td>';
-                        } else {
-                            html += '<td>' + escapeHtml(String(cellValue)) + '</td>';
-                        }
-                    } catch (e) {
-                        html += '<td>Error</td>';
-                    }
-                }
-                html += '</tr>';
-            }
-            html += '</tbody></table>';
-
-            return html;
-
-        } catch (e) {
-            log.error('Error building table for search ' + searchId, e.message);
-            return '<div class="error-msg">Error loading search ' + escapeHtml(searchId) + ': ' + escapeHtml(e.message) + '</div>';
-        }
-    }
-
     /**
      * Determines if a column should allow HTML rendering based on column label
      * @param {string} columnLabel - The column label to check
