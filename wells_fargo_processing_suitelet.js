@@ -6,10 +6,10 @@
 define(['N/ui/serverWidget', 'N/search', 'N/log', 'N/url', 'N/record', 'N/redirect'], function (serverWidget, search, log, url, record, redirect) {
 
     /**
-     * Handles GET and POST requests to the Suitelet
-     * @param {Object} context - NetSuite context object containing request/response
-     * @returns {void}
-     */
+  * Handles GET and POST requests to the Suitelet
+  * @param {Object} context - NetSuite context object containing request/response
+  * @returns {void}
+  */
     function onRequest(context) {
         if (context.request.method === 'GET') {
             var form = serverWidget.createForm({
@@ -139,7 +139,6 @@ define(['N/ui/serverWidget', 'N/search', 'N/log', 'N/url', 'N/record', 'N/redire
                             value: new Date()
                         });
 
-
                         // Enhanced memo with more details
                         var memoText = 'Wells Fargo Customer Deposit - WF Auth #: ' + wfAuthNumber;
                         memoText += ' - WF Record ID: WF' + wfAuthId;
@@ -210,11 +209,11 @@ define(['N/ui/serverWidget', 'N/search', 'N/log', 'N/url', 'N/record', 'N/redire
                         // Update the Wells Fargo Authorization record and get its name
                         if (wfAuthId) {
                             try {
-                                // Get existing deposit links and append new deposit ID
+                                // Get existing deposit links
                                 var existingDepositLinks = getExistingDepositLinks(wfAuthId);
                                 var updatedDepositLinks = appendDepositToMultipleSelect(existingDepositLinks, depositId);
 
-                                // Get Wells Fargo Authorization name before updating
+                                // Load Wells Fargo Authorization record to get current amounts
                                 var wfAuthRecord = record.load({
                                     type: 'customrecord_bas_wf_auth',
                                     id: wfAuthId,
@@ -222,26 +221,52 @@ define(['N/ui/serverWidget', 'N/search', 'N/log', 'N/url', 'N/record', 'N/redire
                                 });
                                 wfAuthName = wfAuthRecord.getValue('name') || wfAuthId;
 
-                                // Update the Wells Fargo Authorization record
+                                // Get current "To Be Charged" amount (treat null as 0)
+                                var currentToBeCharged = wfAuthRecord.getValue('custrecord_wf_deposit_to_be_charged') || 0;
+                                currentToBeCharged = parseFloat(currentToBeCharged);
+
+                                // Get current "Charged" amount (treat null as 0)
+                                var currentCharged = wfAuthRecord.getValue('custrecord_wells_fargo_auth_dep_charged') || 0;
+                                currentCharged = parseFloat(currentCharged);
+
+                                // Calculate new amounts
+                                var newToBeCharged = currentToBeCharged - amountFloat;
+                                var newCharged = currentCharged + amountFloat;
+
+                                log.debug('Updating Wells Fargo Auth amounts', {
+                                    wfAuthId: wfAuthId,
+                                    depositAmount: amountFloat,
+                                    currentToBeCharged: currentToBeCharged,
+                                    newToBeCharged: newToBeCharged,
+                                    currentCharged: currentCharged,
+                                    newCharged: newCharged
+                                });
+
+                                // Update the Wells Fargo Authorization record with all changes
                                 record.submitFields({
                                     type: 'customrecord_bas_wf_auth',
                                     id: wfAuthId,
                                     values: {
-                                        'custrecord_customer_deposit_link': updatedDepositLinks
+                                        'custrecord_customer_deposit_link': updatedDepositLinks,
+                                        'custrecord_wf_deposit_to_be_charged': newToBeCharged,
+                                        'custrecord_wells_fargo_auth_dep_charged': newCharged
                                     }
                                 });
 
-                                log.debug('Wells Fargo Auth record updated', {
+                                log.audit('Wells Fargo Auth record updated successfully', {
                                     wfAuthId: wfAuthId,
                                     wfAuthName: wfAuthName,
                                     depositId: depositId,
                                     depositTranId: depositTranId,
-                                    updatedDepositLinks: updatedDepositLinks
+                                    updatedDepositLinks: updatedDepositLinks,
+                                    newToBeCharged: newToBeCharged,
+                                    newCharged: newCharged
                                 });
 
                             } catch (updateError) {
                                 log.error('Error updating Wells Fargo Auth record', {
                                     error: updateError.message,
+                                    stack: updateError.stack,
                                     wfAuthId: wfAuthId,
                                     depositId: depositId
                                 });
@@ -667,10 +692,10 @@ define(['N/ui/serverWidget', 'N/search', 'N/log', 'N/url', 'N/record', 'N/redire
     }
 
     /**
-   * Builds HTML content containing both search results
-   * @param {Object} context - NetSuite context object containing request/response
-   * @returns {string} HTML content string
-   */
+  * Builds HTML content containing both search results
+  * @param {Object} context - NetSuite context object containing request/response
+  * @returns {string} HTML content string
+  */
     function buildSearchResultsHTML(context) {
         var html = '<style>' +
             // Reset NetSuite default styles and remove borders
@@ -696,11 +721,20 @@ define(['N/ui/serverWidget', 'N/search', 'N/log', 'N/url', 'N/record', 'N/redire
             // Button styling
             '.action-btn { background-color: #4CAF50; color: white; padding: 6px 12px; border: none; cursor: pointer; border-radius: 4px; font-size: 11px; text-decoration: none; display: inline-block; transition: background-color 0.3s; }' +
             '.action-btn:hover { background-color: #45a049; text-decoration: none; }' +
+            '.action-btn:disabled { background-color: #cccccc; cursor: not-allowed; }' +
             '.action-cell { text-align: center; white-space: nowrap; padding: 4px; }' +
 
             // Message styling
             '.success-msg { background-color: #d4edda; color: #155724; padding: 12px; border: 1px solid #c3e6cb; border-radius: 6px; margin: 15px 0; font-size: 13px; }' +
             '.error-msg { background-color: #f8d7da; color: #721c24; padding: 12px; border: 1px solid #f5c6cb; border-radius: 6px; margin: 15px 0; font-size: 13px; }' +
+
+            // Loading overlay styling
+            '.loading-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0, 0, 0, 0.5); z-index: 9999; justify-content: center; align-items: center; }' +
+            '.loading-overlay.active { display: flex; }' +
+            '.loading-content { background-color: white; padding: 30px; border-radius: 8px; text-align: center; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1); }' +
+            '.loading-spinner { border: 4px solid #f3f3f3; border-top: 4px solid #4CAF50; border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; margin: 0 auto 15px; }' +
+            '@keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }' +
+            '.loading-text { font-size: 14px; color: #333; font-weight: bold; }' +
 
             // Hidden data containers
             '.hidden-data { display: none; }' +
@@ -712,6 +746,24 @@ define(['N/ui/serverWidget', 'N/search', 'N/log', 'N/url', 'N/record', 'N/redire
         // Add inline JavaScript functions
         html += '<script>' +
             'function refreshPage() { window.location.reload(); }' +
+
+            // Show loading overlay
+            'function showLoading(message) {' +
+            '    var overlay = document.getElementById("loadingOverlay");' +
+            '    var text = document.getElementById("loadingText");' +
+            '    if (overlay && text) {' +
+            '        text.textContent = message || "Processing...";' +
+            '        overlay.className = "loading-overlay active";' +
+            '    }' +
+            '}' +
+
+            // Hide loading overlay
+            'function hideLoading() {' +
+            '    var overlay = document.getElementById("loadingOverlay");' +
+            '    if (overlay) {' +
+            '        overlay.className = "loading-overlay";' +
+            '    }' +
+            '}' +
 
             // Prompt for deposit amount and submit
             'function promptAndSubmitDeposit(dataId, defaultAmount) {' +
@@ -733,6 +785,8 @@ define(['N/ui/serverWidget', 'N/search', 'N/log', 'N/url', 'N/record', 'N/redire
             '            return;' +
             '        }' +
             '        ' +
+            '        showLoading("Creating customer deposit...");' +
+            '        ' +
             '        var form = document.createElement("form");' +
             '        form.method = "POST";' +
             '        form.action = window.location.href;' +
@@ -749,6 +803,7 @@ define(['N/ui/serverWidget', 'N/search', 'N/log', 'N/url', 'N/record', 'N/redire
             '        document.body.appendChild(form);' +
             '        form.submit();' +
             '    } catch (e) {' +
+            '        hideLoading();' +
             '        alert("Error: " + e.message);' +
             '    }' +
             '}' +
@@ -773,6 +828,8 @@ define(['N/ui/serverWidget', 'N/search', 'N/log', 'N/url', 'N/record', 'N/redire
             '            return;' +
             '        }' +
             '        ' +
+            '        showLoading("Creating customer payment...");' +
+            '        ' +
             '        var form = document.createElement("form");' +
             '        form.method = "POST";' +
             '        form.action = window.location.href;' +
@@ -789,10 +846,19 @@ define(['N/ui/serverWidget', 'N/search', 'N/log', 'N/url', 'N/record', 'N/redire
             '        document.body.appendChild(form);' +
             '        form.submit();' +
             '    } catch (e) {' +
+            '        hideLoading();' +
             '        alert("Error: " + e.message);' +
             '    }' +
             '}' +
             '</script>';
+
+        // Add loading overlay HTML
+        html += '<div id="loadingOverlay" class="loading-overlay">' +
+            '<div class="loading-content">' +
+            '<div class="loading-spinner"></div>' +
+            '<div id="loadingText" class="loading-text">Processing...</div>' +
+            '</div>' +
+            '</div>';
 
         // Main container
         html += '<div class="wells-fargo-container">';
@@ -821,11 +887,13 @@ define(['N/ui/serverWidget', 'N/search', 'N/log', 'N/url', 'N/record', 'N/redire
         }
 
         // First Search: Wells Fargo Sales Order Customer Deposits
-        html += '<div class="search-title">BAS Wells Fargo Sales Order Customer Deposits To Be Charged</div>';
+        html += '<div class="search-title">Kitchen Works Materials: Sales Order 50% Deposit Processing</div>';
+        html += '<div class="search-count" style="font-size: 12px; color: #666;">Saved Search Data: BAS Wells Fargo Sales Order Customer Deposits To Be Charged</div>';
         html += buildSearchTable('customsearch_bas_wells_fargo_so_cd', 10, 'deposit');
 
         // Second Search: A/R Aging (Wells Fargo Financing)
-        html += '<div class="search-title">BAS A/R Aging (Wells Fargo Financing)</div>';
+        html += '<div class="search-title">Open A/R Invoice / Credit Memo Processing</div>';
+        html += '<div class="search-count" style="font-size: 12px; color: #666;">Saved Search Data: BAS A/R Aging (Wells Fargo Financing)</div>';
         html += buildSearchTable('customsearch5263', 16, 'payment');
 
         // Close main container
@@ -833,7 +901,6 @@ define(['N/ui/serverWidget', 'N/search', 'N/log', 'N/url', 'N/record', 'N/redire
 
         return html;
     }
-
     /**
      * Builds HTML table for a specific saved search
      * @param {string} searchId - The saved search ID
