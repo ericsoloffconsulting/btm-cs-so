@@ -705,18 +705,27 @@ define(['N/ui/serverWidget', 'N/search', 'N/log', 'N/url', 'N/record', 'N/redire
             '.smalltextnolink { border: none !important; }' +
 
             // Main container styling
-            '.wells-fargo-container { margin: 0; padding: 0; border: none; background: transparent; }' +
+            '.wells-fargo-container { margin: 0; padding: 20px; border: none; background: transparent; position: relative; }' +
+
+            // SOP Quick Link styling
+            '.sop-link-container { position: absolute; top: 0; right: 0; z-index: 100; }' +
+            '.sop-quick-link { display: inline-flex; align-items: center; padding: 10px 18px; background: linear-gradient(135deg, #4CAF50 0%, #45a049 100%); color: white; text-decoration: none; border-radius: 8px; font-weight: 600; font-size: 13px; box-shadow: 0 4px 6px rgba(76, 175, 80, 0.3), 0 1px 3px rgba(0, 0, 0, 0.1); transition: all 0.3s ease; border: 2px solid rgba(255, 255, 255, 0.2); }' +
+            '.sop-quick-link:hover { background: linear-gradient(135deg, #45a049 0%, #4CAF50 100%); transform: translateY(-2px); box-shadow: 0 6px 12px rgba(76, 175, 80, 0.4), 0 2px 4px rgba(0, 0, 0, 0.15); text-decoration: none; color: white; border-color: rgba(255, 255, 255, 0.3); }' +
+            '.sop-quick-link:active { transform: translateY(0px); box-shadow: 0 2px 4px rgba(76, 175, 80, 0.3), 0 1px 2px rgba(0, 0, 0, 0.1); }' +
+            '.sop-quick-link svg { filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.2)); }' +
 
             // Table styling
             'table.search-table { border-collapse: collapse; width: 100%; margin: 15px 0; border: 1px solid #ddd; background: white; }' +
             'table.search-table th, table.search-table td { border: 1px solid #ddd; padding: 8px; text-align: left; vertical-align: top; }' +
-            'table.search-table th { background-color: #f8f9fa; font-weight: bold; color: #333; font-size: 12px; }' +
+            'table.search-table th { background-color: #f8f9fa; font-weight: bold; color: #333; font-size: 12px; position: -webkit-sticky; position: sticky; top: 0; z-index: 100; box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1); }' +
             'table.search-table tr:nth-child(even) td { background-color: #f9f9f9; }' +
             'table.search-table tr:hover td { background-color: #e8f4f8; }' +
 
-            // Search title styling
-            '.search-title { font-size: 16px; font-weight: bold; margin: 25px 0 8px 0; color: #333; padding: 8px 0; border-bottom: 2px solid #4CAF50; }' +
-            '.search-count { font-style: italic; color: #666; margin: 5px 0 10px 0; font-size: 12px; }' +
+            // Search section wrapper (non-sticky)
+            '.search-section-header { background: white; }' +
+            '.search-title { font-size: 16px; font-weight: bold; margin: 25px 0 0 0; color: #333; padding: 10px 10px 6px 10px; border-bottom: 2px solid #4CAF50; }' +
+            '.search-count { font-style: italic; color: #666; margin: 0; font-size: 12px; padding: 2px 10px 0 10px; }' +
+            '.results-count { font-style: italic; color: #666; margin: 0; font-size: 12px; padding: 0 10px 8px 10px; }' +
 
             // Button styling
             '.action-btn { background-color: #4CAF50; color: white; padding: 6px 12px; border: none; cursor: pointer; border-radius: 4px; font-size: 11px; text-decoration: none; display: inline-block; transition: background-color 0.3s; }' +
@@ -863,6 +872,20 @@ define(['N/ui/serverWidget', 'N/search', 'N/log', 'N/url', 'N/record', 'N/redire
         // Main container
         html += '<div class="wells-fargo-container">';
 
+        // SOP Quick Link (top right)
+        html += '<div class="sop-link-container">';
+        html += '<a href="https://8289753.app.netsuite.com/app/site/hosting/scriptlet.nl?script=3923&deploy=1#15" target="_blank" class="sop-quick-link">';
+        html += '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 6px; vertical-align: middle;">';
+        html += '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>';
+        html += '<polyline points="14 2 14 8 20 8"></polyline>';
+        html += '<line x1="16" y1="13" x2="8" y2="13"></line>';
+        html += '<line x1="16" y1="17" x2="8" y2="17"></line>';
+        html += '<polyline points="10 9 9 9 8 9"></polyline>';
+        html += '</svg>';
+        html += '<span>Kitchens SOP Quick Link</span>';
+        html += '</a>';
+        html += '</div>';
+
         // Show success/error messages with XSS protection
         if (context && context.request.parameters.success) {
             html += '<div class="success-msg">';
@@ -887,20 +910,64 @@ define(['N/ui/serverWidget', 'N/search', 'N/log', 'N/url', 'N/record', 'N/redire
         }
 
         // First Search: Wells Fargo Sales Order Customer Deposits
-        html += '<div class="search-title">Kitchen Works Materials: Sales Order 50% Deposit Processing</div>';
-        html += '<div class="search-count" style="font-size: 12px; color: #666;">Saved Search Data: BAS Wells Fargo Sales Order Customer Deposits To Be Charged</div>';
-        html += buildSearchTable('customsearch_bas_wells_fargo_so_cd', 10, 'deposit');
+        html += buildSearchSection(
+            'Kitchen Works Materials: Sales Order 50% Deposit Processing',
+            'Saved Search Data: BAS Wells Fargo Sales Order Customer Deposits To Be Charged',
+            'customsearch_bas_wells_fargo_so_cd',
+            10,
+            'deposit'
+        );
 
         // Second Search: A/R Aging (Wells Fargo Financing)
-        html += '<div class="search-title">Open A/R Invoice / Credit Memo Processing</div>';
-        html += '<div class="search-count" style="font-size: 12px; color: #666;">Saved Search Data: BAS A/R Aging (Wells Fargo Financing)</div>';
-        html += buildSearchTable('customsearch5263', 16, 'payment');
+        html += buildSearchSection(
+            'Open A/R Invoice / Credit Memo Processing',
+            'Saved Search Data: BAS A/R Aging (Wells Fargo Financing)',
+            'customsearch5263',
+            16,
+            'payment'
+        );
 
         // Close main container
         html += '</div>';
 
         return html;
     }
+
+    /**
+     * Builds a complete search section with sticky header
+     * @param {string} title - The section title
+     * @param {string} searchInfo - The search information text
+     * @param {string} searchId - The saved search ID
+     * @param {number} expectedColumns - Expected number of columns to display
+     * @param {string} actionType - Type of action ('deposit' or 'payment')
+     * @returns {string} HTML string for the complete section
+     */
+    function buildSearchSection(title, searchInfo, searchId, expectedColumns, actionType) {
+        var html = '';
+
+        // Start sticky header wrapper
+        html += '<div class="search-section-header">';
+        html += '<div class="search-title">' + escapeHtml(title) + '</div>';
+        html += '<div class="search-count">' + escapeHtml(searchInfo) + '</div>';
+
+        // Add results count inside the sticky header
+        try {
+            var savedSearch = search.load({ id: searchId });
+            var searchResults = savedSearch.run();
+            var resultsRange = searchResults.getRange({ start: 0, end: 1000 });
+            html += '<div class="results-count">Results: ' + resultsRange.length + '</div>';
+        } catch (e) {
+            html += '<div class="results-count">Results: Error loading</div>';
+        }
+
+        html += '</div>'; // Close sticky header wrapper
+
+        // Add the table
+        html += buildSearchTable(searchId, expectedColumns, actionType);
+
+        return html;
+    }
+
     /**
      * Builds HTML table for a specific saved search
      * @param {string} searchId - The saved search ID
@@ -921,11 +988,10 @@ define(['N/ui/serverWidget', 'N/search', 'N/log', 'N/url', 'N/record', 'N/redire
             });
 
             if (resultsRange.length === 0) {
-                return '<div class="search-count">No results found</div>';
+                return '<div style="padding: 10px; font-style: italic; color: #666;">No results found</div>';
             }
 
-            var html = '<div class="search-count">Results: ' + resultsRange.length + '</div>';
-            html += '<table class="search-table">';
+            var html = '<table class="search-table">';
 
             // Build header row
             html += '<thead><tr>';
