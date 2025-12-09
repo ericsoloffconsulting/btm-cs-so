@@ -3,7 +3,7 @@
  * @NScriptType Suitelet
  * @NModuleScope SameAccount
  */
-define(['N/ui/serverWidget', 'N/search', 'N/log', 'N/url', 'N/record', 'N/redirect'], function (serverWidget, search, log, url, record, redirect) {
+define(['N/ui/serverWidget', 'N/search', 'N/log', 'N/url', 'N/record', 'N/redirect', 'N/query'], function (serverWidget, search, log, url, record, redirect, query) {
 
     /**
   * Handles GET and POST requests to the Suitelet
@@ -579,6 +579,84 @@ define(['N/ui/serverWidget', 'N/search', 'N/log', 'N/url', 'N/record', 'N/redire
                         });
                         throw fieldError;
                     }
+                } else if (action === 'create_note') {
+                    // Log ALL parameters to debug
+                    log.debug('Creating Note - All POST Parameters', JSON.stringify(context.request.parameters));
+
+                    var transactionId = context.request.parameters.transactionId;
+                    var noteText = context.request.parameters.noteText;
+
+                    log.debug('Creating Note - Input Values', {
+                        transactionId: transactionId,
+                        noteText: noteText
+                    });
+
+                    // Validate inputs
+                    if (!transactionId || !noteText) {
+                        throw new Error('Missing required parameters: transactionId=' + transactionId + ', noteText=' + noteText);
+                    }
+
+                    // Parse and validate transaction ID
+                    var transactionIdInt = parseInt(transactionId, 10);
+                    if (isNaN(transactionIdInt) || transactionIdInt <= 0) {
+                        throw new Error('Invalid transaction ID: ' + transactionId);
+                    }
+
+                    // Create note record
+                    var noteRecord = record.create({
+                        type: 'note',
+                        isDynamic: false
+                    });
+
+                    try {
+                        // Set note fields
+                        noteRecord.setValue({
+                            fieldId: 'title',
+                            value: 'Wells Fargo Note'
+                        });
+
+                        noteRecord.setValue({
+                            fieldId: 'note',
+                            value: noteText
+                        });
+
+                        // Link to transaction using transaction field
+                        noteRecord.setValue({
+                            fieldId: 'transaction',
+                            value: transactionIdInt
+                        });
+
+                        // Don't set notedate - let NetSuite default it to current date in account timezone
+                        // This avoids timezone conversion issues where JavaScript Date objects
+                        // can cause the date to shift when converted to Pacific Time
+
+                        // Save the note
+                        var noteId = noteRecord.save();
+
+                        log.audit('Note Created Successfully', {
+                            noteId: noteId,
+                            transactionId: transactionIdInt,
+                            noteText: noteText
+                        });
+
+                        // Redirect back to the same page with success message
+                        redirect.toSuitelet({
+                            scriptId: context.request.parameters.script,
+                            deploymentId: context.request.parameters.deploy,
+                            parameters: {
+                                success: 'note_created'
+                            }
+                        });
+
+                    } catch (noteError) {
+                        log.error('Error creating note', {
+                            error: noteError.message,
+                            stack: noteError.stack,
+                            transactionId: transactionIdInt,
+                            noteText: noteText
+                        });
+                        throw noteError;
+                    }
                 }
 
             } catch (e) {
@@ -692,6 +770,58 @@ define(['N/ui/serverWidget', 'N/search', 'N/log', 'N/url', 'N/record', 'N/redire
     }
 
     /**
+     * Gets the most recent note for a given transaction using SuiteQL TransactionNote table
+     * @param {number} transactionId - The transaction internal ID
+     * @returns {Object|null} Note object with notedate, note text, and author, or null if no notes found
+     */
+    function getMostRecentNote(transactionId) {
+        if (!transactionId) {
+            return null;
+        }
+
+        try {
+            // Use SuiteQL to query TransactionNote table with Employee join for author name
+            var sql = 'SELECT ' +
+                'TransactionNote.NoteDate, ' +
+                'TransactionNote.Note, ' +
+                'TransactionNote.Title, ' +
+                '(Employee.FirstName || \' \' || Employee.LastName) AS Author ' +
+                'FROM TransactionNote ' +
+                'INNER JOIN Employee ON (Employee.ID = TransactionNote.Author) ' +
+                'WHERE TransactionNote.Transaction = ? ' +
+                'ORDER BY TransactionNote.NoteDate DESC';
+
+            var results = query.runSuiteQL({
+                query: sql,
+                params: [transactionId]
+            }).asMappedResults();
+
+            log.debug('getMostRecentNote query results', {
+                transactionId: transactionId,
+                resultsCount: results ? results.length : 0,
+                firstResult: results && results.length > 0 ? JSON.stringify(results[0]) : 'none'
+            });
+
+            if (results && results.length > 0) {
+                return {
+                    notedate: results[0].notedate || '',
+                    note: results[0].note || '',
+                    title: results[0].title || '',
+                    author: results[0].author || ''
+                };
+            }
+
+            return null;
+        } catch (e) {
+            log.error('Error fetching note for transaction ' + transactionId, {
+                error: e.message,
+                stack: e.stack
+            });
+            return null;
+        }
+    }
+
+    /**
   * Builds HTML content containing both search results
   * @param {Object} context - NetSuite context object containing request/response
   * @returns {string} HTML content string
@@ -731,7 +861,24 @@ define(['N/ui/serverWidget', 'N/search', 'N/log', 'N/url', 'N/record', 'N/redire
             '.action-btn { background-color: #4CAF50; color: white; padding: 6px 12px; border: none; cursor: pointer; border-radius: 4px; font-size: 11px; text-decoration: none; display: inline-block; transition: background-color 0.3s; }' +
             '.action-btn:hover { background-color: #45a049; text-decoration: none; }' +
             '.action-btn:disabled { background-color: #cccccc; cursor: not-allowed; }' +
+            '.action-btn-secondary { background-color: #5b9bd5; color: white; padding: 5px 10px; border: none; cursor: pointer; border-radius: 3px; font-size: 10px; text-decoration: none; display: inline-block; transition: background-color 0.3s; }' +
+            '.action-btn-secondary:hover { background-color: #4a8bc2; text-decoration: none; }' +
             '.action-cell { text-align: center; white-space: nowrap; padding: 4px; }' +
+
+            // Note-related styling
+            '.has-note td { background-color: #fff9e6 !important; }' +
+            '.has-note td:first-child { border-left: 3px solid #ffd966 !important; }' +
+            '.has-note:hover td { background-color: #fff4cc !important; }' +
+            '.note-cell { max-width: 300px; font-size: 11px; word-wrap: break-word; }' +
+
+            // Note dialog styling
+            '.note-dialog-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0, 0, 0, 0.5); z-index: 10000; justify-content: center; align-items: center; }' +
+            '.note-dialog-overlay.active { display: flex; }' +
+            '.note-dialog { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3); min-width: 400px; max-width: 600px; }' +
+            '.note-dialog h3 { margin-top: 0; margin-bottom: 15px; color: #333; }' +
+            '.note-dialog textarea { width: 100%; min-height: 100px; padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-family: inherit; font-size: 13px; resize: vertical; }' +
+            '.note-dialog-buttons { margin-top: 15px; text-align: right; }' +
+            '.note-dialog-buttons button { margin-left: 10px; }' +
 
             // Message styling
             '.success-msg { background-color: #d4edda; color: #155724; padding: 12px; border: 1px solid #c3e6cb; border-radius: 6px; margin: 15px 0; font-size: 13px; }' +
@@ -859,6 +1006,78 @@ define(['N/ui/serverWidget', 'N/search', 'N/log', 'N/url', 'N/record', 'N/redire
             '        alert("Error: " + e.message);' +
             '    }' +
             '}' +
+
+            // Show note dialog
+            'function promptAndCreateNote(dataId) {' +
+            '    var dialog = document.getElementById("noteDialog");' +
+            '    var textarea = document.getElementById("noteTextarea");' +
+            '    var currentDataId = document.getElementById("currentNoteDataId");' +
+            '    ' +
+            '    if (dialog && textarea && currentDataId) {' +
+            '        currentDataId.value = dataId;' +
+            '        textarea.value = "";' +
+            '        dialog.className = "note-dialog-overlay active";' +
+            '        textarea.focus();' +
+            '    }' +
+            '}' +
+
+            // Hide note dialog
+            'function closeNoteDialog() {' +
+            '    var dialog = document.getElementById("noteDialog");' +
+            '    if (dialog) {' +
+            '        dialog.className = "note-dialog-overlay";' +
+            '    }' +
+            '}' +
+
+            // Submit note
+            'function submitNote() {' +
+            '    try {' +
+            '        var textarea = document.getElementById("noteTextarea");' +
+            '        var dataId = document.getElementById("currentNoteDataId").value;' +
+            '        var noteText = textarea.value.trim();' +
+            '        ' +
+            '        if (!noteText) {' +
+            '            alert("Please enter a note");' +
+            '            return;' +
+            '        }' +
+            '        ' +
+            '        closeNoteDialog();' +
+            '        showLoading("Creating note...");' +
+            '        ' +
+            '        var dataContainer = document.getElementById(dataId);' +
+            '        if (!dataContainer) {' +
+            '            hideLoading();' +
+            '            alert("Error: Data container not found");' +
+            '            return;' +
+            '        }' +
+            '        ' +
+            '        console.log("Data container ID:", dataId);' +
+            '        console.log("Data container HTML:", dataContainer.innerHTML);' +
+            '        ' +
+            '        var form = document.createElement("form");' +
+            '        form.method = "POST";' +
+            '        form.action = window.location.href;' +
+            '        ' +
+            '        var inputs = dataContainer.getElementsByTagName("input");' +
+            '        console.log("Found", inputs.length, "inputs in container");' +
+            '        for (var i = 0; i < inputs.length; i++) {' +
+            '            console.log("Input", i, "- name:", inputs[i].name, "value:", inputs[i].value);' +
+            '            form.appendChild(inputs[i].cloneNode(true));' +
+            '        }' +
+            '        ' +
+            '        var noteInput = document.createElement("input");' +
+            '        noteInput.type = "hidden";' +
+            '        noteInput.name = "noteText";' +
+            '        noteInput.value = noteText;' +
+            '        form.appendChild(noteInput);' +
+            '        ' +
+            '        document.body.appendChild(form);' +
+            '        form.submit();' +
+            '    } catch (e) {' +
+            '        hideLoading();' +
+            '        alert("Error: " + e.message);' +
+            '    }' +
+            '}' +
             '</script>';
 
         // Add loading overlay HTML
@@ -866,6 +1085,19 @@ define(['N/ui/serverWidget', 'N/search', 'N/log', 'N/url', 'N/record', 'N/redire
             '<div class="loading-content">' +
             '<div class="loading-spinner"></div>' +
             '<div id="loadingText" class="loading-text">Processing...</div>' +
+            '</div>' +
+            '</div>';
+
+        // Add note dialog HTML
+        html += '<div id="noteDialog" class="note-dialog-overlay">' +
+            '<div class="note-dialog">' +
+            '<h3>Create Note</h3>' +
+            '<textarea id="noteTextarea" placeholder="Enter your note here..."></textarea>' +
+            '<input type="hidden" id="currentNoteDataId" value="">' +
+            '<div class="note-dialog-buttons">' +
+            '<button type="button" class="action-btn" style="background: #666;" onclick="closeNoteDialog()">Cancel</button>' +
+            '<button type="button" class="action-btn" onclick="submitNote()">Save Note</button>' +
+            '</div>' +
             '</div>' +
             '</div>';
 
@@ -890,7 +1122,11 @@ define(['N/ui/serverWidget', 'N/search', 'N/log', 'N/url', 'N/record', 'N/redire
         if (context && context.request.parameters.success) {
             html += '<div class="success-msg">';
 
-            if (context.request.parameters.depositTranId) {
+            if (context.request.parameters.success === 'note_created') {
+                // Note success message
+                html += '<strong>Note Created Successfully</strong><br>';
+                html += 'A new note has been added to the transaction.';
+            } else if (context.request.parameters.depositTranId) {
                 // Deposit success message
                 html += '<strong>Customer Deposit Created Successfully and Wells Fargo Authorization Record Updated</strong><br>';
                 html += 'Customer Deposit: ' + escapeHtml(context.request.parameters.depositTranId || 'Unknown') + '<br>';
@@ -915,7 +1151,8 @@ define(['N/ui/serverWidget', 'N/search', 'N/log', 'N/url', 'N/record', 'N/redire
             'Saved Search Data: BAS Wells Fargo Sales Order Customer Deposits To Be Charged',
             'customsearch_bas_wells_fargo_so_cd',
             10,
-            'deposit'
+            'deposit',
+            true  // Enable notes for deposit table
         );
 
         // Second Search: A/R Aging (Wells Fargo Financing)
@@ -924,7 +1161,8 @@ define(['N/ui/serverWidget', 'N/search', 'N/log', 'N/url', 'N/record', 'N/redire
             'Saved Search Data: BAS A/R Aging (Wells Fargo Financing)',
             'customsearch5263',
             16,
-            'payment'
+            'payment',
+            true  // Enable notes for payment table
         );
 
         // Close main container
@@ -940,9 +1178,10 @@ define(['N/ui/serverWidget', 'N/search', 'N/log', 'N/url', 'N/record', 'N/redire
      * @param {string} searchId - The saved search ID
      * @param {number} expectedColumns - Expected number of columns to display
      * @param {string} actionType - Type of action ('deposit' or 'payment')
+     * @param {boolean} enableNotes - Whether to show notes column and functionality
      * @returns {string} HTML string for the complete section
      */
-    function buildSearchSection(title, searchInfo, searchId, expectedColumns, actionType) {
+    function buildSearchSection(title, searchInfo, searchId, expectedColumns, actionType, enableNotes) {
         var html = '';
 
         // Start sticky header wrapper
@@ -963,7 +1202,7 @@ define(['N/ui/serverWidget', 'N/search', 'N/log', 'N/url', 'N/record', 'N/redire
         html += '</div>'; // Close sticky header wrapper
 
         // Add the table
-        html += buildSearchTable(searchId, expectedColumns, actionType);
+        html += buildSearchTable(searchId, expectedColumns, actionType, enableNotes);
 
         return html;
     }
@@ -973,9 +1212,10 @@ define(['N/ui/serverWidget', 'N/search', 'N/log', 'N/url', 'N/record', 'N/redire
      * @param {string} searchId - The saved search ID
      * @param {number} expectedColumns - Expected number of columns to display
      * @param {string} actionType - Type of action ('deposit' or 'payment')
+     * @param {boolean} enableNotes - Whether to show notes column and functionality
      * @returns {string} HTML table string
      */
-    function buildSearchTable(searchId, expectedColumns, actionType) {
+    function buildSearchTable(searchId, expectedColumns, actionType, enableNotes) {
         try {
             var savedSearch = search.load({
                 id: searchId
@@ -1006,20 +1246,52 @@ define(['N/ui/serverWidget', 'N/search', 'N/log', 'N/url', 'N/record', 'N/redire
                     html += '<th>Column ' + (col + 1) + '</th>';
                 }
             }
+            // Add User Notes column header if notes are enabled
+            if (enableNotes) {
+                html += '<th>User Notes</th>';
+            }
             html += '</tr></thead>';
 
             // Build data rows
             html += '<tbody>';
             for (var i = 0; i < resultsRange.length; i++) {
-                html += '<tr>';
+                // Check if this row has notes (for highlighting) - works for both deposit and payment
+                var rowClass = '';
+                var recentNote = null;
+                if (enableNotes) {
+                    var tempData = extractRowData(resultsRange[i], actionType);
+                    var transactionId = (actionType === 'deposit') ? tempData.salesOrderId : tempData.invoiceId;
+                    
+                    log.debug('Checking for notes', {
+                        rowIndex: i,
+                        actionType: actionType,
+                        transactionId: transactionId,
+                        tempDataKeys: Object.keys(tempData)
+                    });
+                    
+                    if (transactionId) {
+                        recentNote = getMostRecentNote(transactionId);
+                        if (recentNote) {
+                            rowClass = 'has-note';
+                            log.debug('Note found for row', {
+                                rowIndex: i,
+                                transactionId: transactionId,
+                                notePreview: recentNote.note ? recentNote.note.substring(0, 50) : 'empty'
+                            });
+                        }
+                    }
+                }
+
+                html += '<tr' + (rowClass ? ' class="' + rowClass + '"' : '') + '>';
 
                 if (actionType === 'deposit') {
                     var mappedData = mapDepositColumns(resultsRange[i]);
                     var dataId = 'deposit_data_' + i;
+                    var noteDataId = 'note_data_deposit_' + i;
 
                     html += '<td class="action-cell">';
 
-                    // Hidden data container (NO FORM TAG - just a div with data)
+                    // Hidden data container for deposit (NO FORM TAG - just a div with data)
                     html += '<div id="' + dataId + '" class="hidden-data">';
                     html += '<input type="hidden" name="action" value="create_deposit">';
                     html += '<input type="hidden" name="customer" value="' + escapeHtml(mappedData.customerId) + '">';
@@ -1030,13 +1302,24 @@ define(['N/ui/serverWidget', 'N/search', 'N/log', 'N/url', 'N/record', 'N/redire
                     html += '<input type="hidden" name="wfAuthNumber" value="' + escapeHtml(mappedData.wfAuthNumber) + '">';
                     html += '</div>';
 
-                    // Button that calls JavaScript function
+                    // Primary action: Create Deposit button
                     html += '<button type="button" class="action-btn" onclick="promptAndSubmitDeposit(\'' + dataId + '\', \'' + escapeHtml(mappedData.amount) + '\')">Create Deposit</button>';
+
+                    // Create Note button for Sales Order - Secondary action (if notes enabled)
+                    if (enableNotes && mappedData.salesOrderId) {
+                        html += '<div id="' + noteDataId + '" class="hidden-data">';
+                        html += '<input type="hidden" name="action" value="create_note">';
+                        html += '<input type="hidden" name="transactionId" value="' + escapeHtml(mappedData.salesOrderId) + '">';
+                        html += '</div>';
+                        html += '<br><button type="button" class="action-btn-secondary" style="margin-top: 4px;" onclick="promptAndCreateNote(\'' + noteDataId + '\')" title="Add a note to this sales order">+ Note</button>';
+                    }
+
                     html += '</td>';
 
                 } else if (actionType === 'payment') {
                     var paymentData = extractRowData(resultsRange[i], actionType);
                     var dataId = 'payment_data_' + i;
+                    var noteDataId = 'note_data_' + i;
 
                     html += '<td class="action-cell">';
 
@@ -1044,7 +1327,7 @@ define(['N/ui/serverWidget', 'N/search', 'N/log', 'N/url', 'N/record', 'N/redire
                     if (paymentData.transactionType === 'Credit Memo') {
                         html += '<span style="color: #666; font-style: italic; font-size: 11px;">Refund Manually</span>';
                     } else {
-                        // Hidden data container (NO FORM TAG - just a div with data)
+                        // Hidden data container for payment (NO FORM TAG - just a div with data)
                         html += '<div id="' + dataId + '" class="hidden-data">';
                         html += '<input type="hidden" name="action" value="create_payment">';
                         html += '<input type="hidden" name="customer" value="' + escapeHtml(paymentData.customerId) + '">';
@@ -1053,8 +1336,18 @@ define(['N/ui/serverWidget', 'N/search', 'N/log', 'N/url', 'N/record', 'N/redire
                         html += '<input type="hidden" name="invoiceNumber" value="' + escapeHtml(paymentData.invoiceNumber) + '">';
                         html += '</div>';
 
-                        // Button that calls JavaScript function
+                        // Primary action: Create Payment button
                         html += '<button type="button" class="action-btn" onclick="promptAndSubmitPayment(\'' + dataId + '\', \'' + escapeHtml(paymentData.amount) + '\')">Create Payment</button>';
+                    }
+
+                    // Create Note button for ALL rows (invoices and credit memos) - Secondary action
+                    // Only show if we have a valid transaction ID
+                    if (paymentData.invoiceId) {
+                        html += '<div id="' + noteDataId + '" class="hidden-data">';
+                        html += '<input type="hidden" name="action" value="create_note">';
+                        html += '<input type="hidden" name="transactionId" value="' + escapeHtml(paymentData.invoiceId) + '">';
+                        html += '</div>';
+                        html += '<br><button type="button" class="action-btn-secondary" style="margin-top: 4px;" onclick="promptAndCreateNote(\'' + noteDataId + '\')" title="Add a note to this transaction">+ Note</button>';
                     }
 
                     html += '</td>';
@@ -1085,6 +1378,26 @@ define(['N/ui/serverWidget', 'N/search', 'N/log', 'N/url', 'N/record', 'N/redire
                         html += '<td>Error</td>';
                     }
                 }
+
+                // Add User Notes column if notes are enabled
+                if (enableNotes) {
+                    if (recentNote && recentNote.note) {
+                        // Format: "MM/DD/YYYY - Author Name - Note text here"
+                        var noteDisplay = '';
+                        if (recentNote.notedate) {
+                            noteDisplay += escapeHtml(recentNote.notedate) + ' - ';
+                        }
+                        if (recentNote.author) {
+                            noteDisplay += escapeHtml(recentNote.author) + ' - ';
+                        }
+                        noteDisplay += escapeHtml(recentNote.note);
+
+                        html += '<td class="note-cell">' + noteDisplay + '</td>';
+                    } else {
+                        html += '<td class="note-cell" style="color: #999; font-style: italic;">No notes</td>';
+                    }
+                }
+
                 html += '</tr>';
             }
             html += '</tbody></table>';
@@ -1108,13 +1421,27 @@ define(['N/ui/serverWidget', 'N/search', 'N/log', 'N/url', 'N/record', 'N/redire
 
         try {
             if (actionType === 'payment') {
-                // Use column labels instead of indexes for reliability
+                // Extract column data including invoice number and transaction type
+                var invoiceNumber = '';
+                var transactionType = '';
+
+                // Extract data from columns (internal ID is not in search results, so we'll look it up)
                 for (var i = 0; i < result.columns.length; i++) {
                     var column = result.columns[i];
                     var label = column.label || '';
                     var value = result.getValue(column) || '';
 
                     switch (label) {
+                        case 'Document #':
+                        case 'Document Number':
+                        case 'Invoice':
+                            invoiceNumber = value;
+                            data.invoiceNumber = value;
+                            break;
+                        case 'Type':
+                            transactionType = result.getText(column) || value;
+                            data.transactionType = transactionType;
+                            break;
                         case 'Customer':
                         case 'Customer Internal ID':
                             data.customerId = value;
@@ -1127,16 +1454,43 @@ define(['N/ui/serverWidget', 'N/search', 'N/log', 'N/url', 'N/record', 'N/redire
                         case 'WF Auth #':
                             data.wfAuthNumber = value;
                             break;
-                        case 'Document #':
-                        case 'Document Number':
-                        case 'Invoice':
-                            data.invoiceNumber = value;
-                            break;
-                        case 'Type':
-                            data.transactionType = value;
-                            break;
                         default:
                             break;
+                    }
+                }
+
+                // Look up the internal ID using the invoice/credit memo number
+                if (invoiceNumber && transactionType) {
+                    try {
+                        var recordType = (transactionType === 'Credit Memo') ? search.Type.CREDIT_MEMO : search.Type.INVOICE;
+
+                        var tranSearch = search.create({
+                            type: recordType,
+                            filters: [
+                                ['tranid', 'is', invoiceNumber],
+                                'AND',
+                                ['mainline', 'is', 'T']
+                            ],
+                            columns: ['internalid']
+                        });
+
+                        var searchResults = tranSearch.run().getRange({ start: 0, end: 1 });
+
+                        if (searchResults && searchResults.length > 0) {
+                            data.invoiceId = searchResults[0].getValue('internalid');
+                        } else {
+                            log.error('Could not find internal ID in lookup', {
+                                invoiceNumber: invoiceNumber,
+                                transactionType: transactionType
+                            });
+                        }
+                    } catch (lookupError) {
+                        log.error('Error looking up internal ID', {
+                            error: lookupError.message,
+                            stack: lookupError.stack,
+                            invoiceNumber: invoiceNumber,
+                            transactionType: transactionType
+                        });
                     }
                 }
             } else if (actionType === 'deposit') {
@@ -1150,7 +1504,10 @@ define(['N/ui/serverWidget', 'N/search', 'N/log', 'N/url', 'N/record', 'N/redire
                 data.wfAuthNumber = mappedData.wfAuthNumber;
             }
         } catch (e) {
-            log.error('Error extracting row data', e.message);
+            log.error('Error extracting row data', {
+                error: e.message,
+                stack: e.stack
+            });
         }
 
         return data;
