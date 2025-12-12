@@ -681,6 +681,89 @@ define(['N/ui/serverWidget', 'N/search', 'N/log', 'N/url', 'N/record', 'N/redire
     }
 
     /**
+     * Gets the total of all applied customer deposits for a Sales Order
+     * @param {number} salesOrderId - The Sales Order internal ID
+     * @returns {number} The total amount of customer deposits applied
+     */
+    function getAppliedCustomerDeposits(salesOrderId) {
+        if (!salesOrderId) {
+            return 0;
+        }
+
+        try {
+            var depositSearch = search.create({
+                type: search.Type.CUSTOMER_DEPOSIT,
+                filters: [
+                    ['appliedtotransaction.internalid', 'anyof', salesOrderId],
+                    'AND',
+                    ['mainline', 'is', 'T'],
+                    'AND',
+                    ['status', 'noneof', 'CustDep:V'] // Exclude voided deposits
+                ],
+                columns: ['total']
+            });
+
+            var total = 0;
+            depositSearch.run().each(function(result) {
+                var payment = parseFloat(result.getValue('total')) || 0;
+                total += payment;
+                return true; // Continue iterating
+            });
+
+            log.debug('Applied customer deposits retrieved', {
+                salesOrderId: salesOrderId,
+                total: total
+            });
+
+            return total;
+
+        } catch (e) {
+            log.error('Error getting applied customer deposits', {
+                error: e.message,
+                salesOrderId: salesOrderId
+            });
+            return 0;
+        }
+    }
+
+    /**
+     * Gets the transaction total from a Sales Order by internal ID
+     * @param {number} salesOrderId - The Sales Order internal ID
+     * @returns {number} The transaction total amount
+     */
+    function getSalesOrderTotal(salesOrderId) {
+        if (!salesOrderId) {
+            return 0;
+        }
+
+        try {
+            var soRecord = record.load({
+                type: record.Type.SALES_ORDER,
+                id: salesOrderId,
+                isDynamic: false
+            });
+
+            var total = soRecord.getValue({
+                fieldId: 'total'
+            });
+
+            log.debug('Sales Order total retrieved', {
+                salesOrderId: salesOrderId,
+                total: total
+            });
+
+            return parseFloat(total) || 0;
+
+        } catch (e) {
+            log.error('Error getting Sales Order total', {
+                error: e.message,
+                salesOrderId: salesOrderId
+            });
+            return 0;
+        }
+    }
+
+    /**
      * Looks up the fulfilling location from a department record
      * @param {number} departmentId - The department ID to lookup
      * @returns {number} The fulfilling location ID
@@ -772,7 +855,7 @@ define(['N/ui/serverWidget', 'N/search', 'N/log', 'N/url', 'N/record', 'N/redire
     /**
      * Gets the most recent note for a given transaction using SuiteQL TransactionNote table
      * @param {number} transactionId - The transaction internal ID
-     * @returns {Object|null} Note object with notedate, note text, and author, or null if no notes found
+     * @returns {Object|null} Note object with notedate, note text, author, and note ID, or null if no notes found
      */
     function getMostRecentNote(transactionId) {
         if (!transactionId) {
@@ -782,6 +865,7 @@ define(['N/ui/serverWidget', 'N/search', 'N/log', 'N/url', 'N/record', 'N/redire
         try {
             // Use SuiteQL to query TransactionNote table with Employee join for author name
             var sql = 'SELECT ' +
+                'TransactionNote.ID, ' +
                 'TransactionNote.NoteDate, ' +
                 'TransactionNote.Note, ' +
                 'TransactionNote.Title, ' +
@@ -804,6 +888,7 @@ define(['N/ui/serverWidget', 'N/search', 'N/log', 'N/url', 'N/record', 'N/redire
 
             if (results && results.length > 0) {
                 return {
+                    id: results[0].id || '',
                     notedate: results[0].notedate || '',
                     note: results[0].note || '',
                     title: results[0].title || '',
@@ -818,6 +903,77 @@ define(['N/ui/serverWidget', 'N/search', 'N/log', 'N/url', 'N/record', 'N/redire
                 stack: e.stack
             });
             return null;
+        }
+    }
+
+    /**
+     * Gets all Wells Fargo Authorization records linked to a Sales Order
+     * @param {number} salesOrderId - The Sales Order internal ID
+     * @returns {Object} Object containing WF auth records array and total amount
+     */
+    function getWellsFargoAuthsForSalesOrder(salesOrderId) {
+        if (!salesOrderId) {
+            return { records: [], total: 0, authNumbers: [] };
+        }
+
+        try {
+            // Search for all Wells Fargo Authorization records linked to this Sales Order
+            var wfAuthSearch = search.create({
+                type: 'customrecord_bas_wf_auth',
+                filters: [
+                    ['custrecord_bas_wf_so_number', 'anyof', salesOrderId]
+                ],
+                columns: [
+                    'name', // Record name
+                    'custrecord26', // Authorization amount
+                    'custrecord25'  // Authorization number
+                ]
+            });
+
+            var wfAuthRecords = [];
+            var totalAmount = 0;
+            var authNumbers = [];
+
+            wfAuthSearch.run().each(function(result) {
+                var recordName = result.getValue('name') || '';
+                var amount = parseFloat(result.getValue('custrecord26')) || 0;
+                var authNumber = result.getValue('custrecord25') || '';
+                var recordId = result.id;
+
+                wfAuthRecords.push({
+                    id: recordId,
+                    name: recordName,
+                    amount: amount,
+                    authNumber: authNumber
+                });
+
+                totalAmount += amount;
+                if (authNumber) {
+                    authNumbers.push(authNumber);
+                }
+
+                return true; // Continue iteration
+            });
+
+            log.debug('Wells Fargo Auths retrieved for Sales Order', {
+                salesOrderId: salesOrderId,
+                recordCount: wfAuthRecords.length,
+                totalAmount: totalAmount
+            });
+
+            return {
+                records: wfAuthRecords,
+                total: totalAmount,
+                authNumbers: authNumbers
+            };
+
+        } catch (e) {
+            log.error('Error getting Wells Fargo Auths for Sales Order', {
+                error: e.message,
+                stack: e.stack,
+                salesOrderId: salesOrderId
+            });
+            return { records: [], total: 0, authNumbers: [] };
         }
     }
 
@@ -870,6 +1026,12 @@ define(['N/ui/serverWidget', 'N/search', 'N/log', 'N/url', 'N/record', 'N/redire
             '.has-note td:first-child { border-left: 3px solid #ffd966 !important; }' +
             '.has-note:hover td { background-color: #fff4cc !important; }' +
             '.note-cell { max-width: 300px; font-size: 11px; word-wrap: break-word; }' +
+
+            // Deposit validation styling
+            '.deposit-validation { font-size: inherit; line-height: inherit; white-space: pre-line; }' +
+            '.validation-match { color: #155724; background-color: #d4edda; padding: 2px 4px; border-radius: 3px; font-weight: bold; }' +
+            '.validation-short { color: #721c24; background-color: #f8d7da; padding: 2px 4px; border-radius: 3px; font-weight: bold; }' +
+            '.validation-over { color: #856404; background-color: #fff3cd; padding: 2px 4px; border-radius: 3px; font-weight: bold; }' +
 
             // Note dialog styling
             '.note-dialog-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0, 0, 0, 0.5); z-index: 10000; justify-content: center; align-items: center; }' +
@@ -1150,7 +1312,7 @@ define(['N/ui/serverWidget', 'N/search', 'N/log', 'N/url', 'N/record', 'N/redire
             'Kitchen Works Materials: Sales Order 50% Deposit Processing',
             'Saved Search Data: BAS Wells Fargo Sales Order Customer Deposits To Be Charged',
             'customsearch_bas_wells_fargo_so_cd',
-            10,
+            11,
             'deposit',
             true  // Enable notes for deposit table
         );
@@ -1236,7 +1398,16 @@ define(['N/ui/serverWidget', 'N/search', 'N/log', 'N/url', 'N/record', 'N/redire
             // Build header row
             html += '<thead><tr>';
             html += '<th>Action</th>';
-            for (var col = 0; col < expectedColumns; col++) {
+            
+            // For deposit action type, we need to insert Deposit Validation header
+            var colsToDisplay = (actionType === 'deposit') ? expectedColumns - 1 : expectedColumns;
+            
+            for (var col = 0; col < colsToDisplay; col++) {
+                // For deposit table, insert Deposit Validation header after column 7 (Selling Location)
+                if (actionType === 'deposit' && col === 8) {
+                    html += '<th>Deposit Validation</th>';
+                }
+                
                 try {
                     var columnLabel = resultsRange[0].columns[col] ?
                         (resultsRange[0].columns[col].label || 'Column ' + (col + 1)) :
@@ -1320,6 +1491,12 @@ define(['N/ui/serverWidget', 'N/search', 'N/log', 'N/url', 'N/record', 'N/redire
                     var paymentData = extractRowData(resultsRange[i], actionType);
                     var dataId = 'payment_data_' + i;
                     var noteDataId = 'note_data_' + i;
+                    
+                    // Get Wells Fargo Authorization records for this invoice's Sales Order
+                    var wfAuthData = { records: [], total: 0, authNumbers: [] };
+                    if (paymentData.salesOrderId) {
+                        wfAuthData = getWellsFargoAuthsForSalesOrder(paymentData.salesOrderId);
+                    }
 
                     html += '<td class="action-cell">';
 
@@ -1354,13 +1531,47 @@ define(['N/ui/serverWidget', 'N/search', 'N/log', 'N/url', 'N/record', 'N/redire
                 }
 
                 // Add regular data columns with selective HTML rendering
-                for (var col = 0; col < expectedColumns; col++) {
+                // For deposit action type, we need to insert Deposit Validation column
+                var colsToDisplay = (actionType === 'deposit') ? expectedColumns - 1 : expectedColumns;
+                
+                for (var col = 0; col < colsToDisplay; col++) {
+                    // For deposit rows, insert Deposit Validation column after column 7 (Selling Location)
+                    if (actionType === 'deposit' && col === 8) {
+                        // Build Deposit Validation display
+                        var validationHtml = '<div class="deposit-validation">';
+                        
+                        var soTotal = parseFloat(mappedData.salesOrderTotal) || 0;
+                        var required = soTotal / 2;
+                        var priorDeposits = parseFloat(mappedData.customerDepositTotal) || 0;
+                        var wfCharge = parseFloat(mappedData.amount) || 0;
+                        var afterProcessing = priorDeposits + wfCharge;
+                        var variance = afterProcessing - required;
+                        
+                        validationHtml += 'SO Total: ' + soTotal.toFixed(2) + '\n\n';
+                        validationHtml += 'Required (50% CD): ' + required.toFixed(2) + '\n\n';
+                        validationHtml += 'Prior CDs: ' + priorDeposits.toFixed(2) + '\n\n';
+                        validationHtml += 'WF To Be Processed: ' + wfCharge.toFixed(2) + '\n\n';
+                        validationHtml += 'Total CDs After Processing: ' + afterProcessing.toFixed(2) + '\n\n';
+                        
+                        // Add validation indicator with color coding
+                        if (variance === 0) {
+                            validationHtml += '<span class="validation-match">✓ VALIDATED</span>';
+                        } else if (variance < 0) {
+                            validationHtml += '<span class="validation-short">⚠️ SHORT ' + Math.abs(variance).toFixed(2) + '</span>';
+                        } else {
+                            validationHtml += '<span class="validation-over">⚠️ OVER ' + variance.toFixed(2) + '</span>';
+                        }
+                        
+                        validationHtml += '</div>';
+                        html += '<td>' + validationHtml + '</td>';
+                    }
+                    
                     try {
                         var cellValue = '';
                         if (resultsRange[i].columns[col]) {
                             cellValue = resultsRange[i].getValue(resultsRange[i].columns[col]) || '';
                             var textValue = resultsRange[i].getText(resultsRange[i].columns[col]);
-                            if (textValue && textValue !== cellValue) {
+                            if (textValue && textValue !== 'undefined' && textValue !== cellValue) {
                                 cellValue = textValue;
                             }
                         }
@@ -1369,10 +1580,116 @@ define(['N/ui/serverWidget', 'N/search', 'N/log', 'N/url', 'N/record', 'N/redire
                         var columnLabel = resultsRange[i].columns[col] ?
                             (resultsRange[i].columns[col].label || '') : '';
 
-                        if (shouldAllowHtmlRendering(columnLabel)) {
-                            html += '<td>' + sanitizeAllowedHtml(String(cellValue)) + '</td>';
+                        // Make specific columns clickable based on column label
+                        if (actionType === 'deposit') {
+                            // For deposit table: Sales Order #, Customer, Wells Fargo Authorization Record ID
+                            if (columnLabel === 'Sales Order #' && mappedData.salesOrderId) {
+                                var soUrl = url.resolveRecord({
+                                    recordType: record.Type.SALES_ORDER,
+                                    recordId: mappedData.salesOrderId,
+                                    isEditMode: false
+                                });
+                                html += '<td><a href="' + escapeHtml(soUrl) + '" target="_blank">' + escapeHtml(String(cellValue)) + '</a></td>';
+                            } else if (columnLabel === 'Customer' && mappedData.customerId) {
+                                var custUrl = url.resolveRecord({
+                                    recordType: record.Type.CUSTOMER,
+                                    recordId: mappedData.customerId,
+                                    isEditMode: false
+                                });
+                                html += '<td><a href="' + escapeHtml(custUrl) + '" target="_blank">' + escapeHtml(String(cellValue)) + '</a></td>';
+                            } else if (columnLabel === 'Wells Fargo Authorization Record ID' && mappedData.wfAuthId) {
+                                var wfUrl = url.resolveRecord({
+                                    recordType: 'customrecord_bas_wf_auth',
+                                    recordId: mappedData.wfAuthId,
+                                    isEditMode: false
+                                });
+                                html += '<td><a href="' + escapeHtml(wfUrl) + '" target="_blank">' + escapeHtml(String(cellValue)) + '</a></td>';
+                            } else if (shouldAllowHtmlRendering(columnLabel)) {
+                                html += '<td>' + sanitizeAllowedHtml(String(cellValue)) + '</td>';
+                            } else {
+                                html += '<td>' + escapeHtml(String(cellValue)) + '</td>';
+                            }
+                        } else if (actionType === 'payment') {
+                            // For payment table: Document #, Customer, WF Record ID
+                            if ((columnLabel === 'Document #' || columnLabel === 'Document Number') && paymentData.invoiceId) {
+                                var recordType = (paymentData.transactionType === 'Credit Memo') ? record.Type.CREDIT_MEMO : record.Type.INVOICE;
+                                var docUrl = url.resolveRecord({
+                                    recordType: recordType,
+                                    recordId: paymentData.invoiceId,
+                                    isEditMode: false
+                                });
+                                html += '<td><a href="' + escapeHtml(docUrl) + '" target="_blank">' + escapeHtml(String(cellValue)) + '</a></td>';
+                            } else if (columnLabel === 'Customer' && paymentData.customerId) {
+                                var custUrl = url.resolveRecord({
+                                    recordType: record.Type.CUSTOMER,
+                                    recordId: paymentData.customerId,
+                                    isEditMode: false
+                                });
+                                html += '<td><a href="' + escapeHtml(custUrl) + '" target="_blank">' + escapeHtml(String(cellValue)) + '</a></td>';
+                            } else if (columnLabel === 'WF Record ID') {
+                                // Display all WF records with their names and amounts
+                                if (wfAuthData.records.length > 0) {
+                                    var wfRecordsHtml = '';
+                                    for (var wfIdx = 0; wfIdx < wfAuthData.records.length; wfIdx++) {
+                                        var wfRec = wfAuthData.records[wfIdx];
+                                        var wfUrl = url.resolveRecord({
+                                            recordType: 'customrecord_bas_wf_auth',
+                                            recordId: wfRec.id,
+                                            isEditMode: false
+                                        });
+                                        if (wfIdx > 0) {
+                                            wfRecordsHtml += '<br>';
+                                        }
+                                        wfRecordsHtml += '<a href="' + escapeHtml(wfUrl) + '" target="_blank">' + 
+                                                        escapeHtml(wfRec.name) + '</a> ($' + 
+                                                        wfRec.amount.toFixed(2) + ')';
+                                    }
+                                    html += '<td>' + wfRecordsHtml + '</td>';
+                                } else {
+                                    html += '<td style="color: #999; font-style: italic;">No WF records</td>';
+                                }
+                            } else if (columnLabel === 'Wells Fargo Authorization Amount ($)' || 
+                                       columnLabel === 'WF Authorization Amount' ||
+                                       columnLabel === 'Authorization Amount') {
+                                // Display the TOTAL of all WF authorization amounts
+                                if (wfAuthData.total > 0) {
+                                    html += '<td>$' + wfAuthData.total.toFixed(2) + '</td>';
+                                } else {
+                                    html += '<td>$0.00</td>';
+                                }
+                            } else if (columnLabel === 'Wells Fargo Authorization #' || 
+                                       columnLabel === 'WF Authorization #' ||
+                                       columnLabel === 'Authorization #') {
+                                // Display all authorization numbers
+                                if (wfAuthData.authNumbers.length > 0) {
+                                    html += '<td>' + escapeHtml(wfAuthData.authNumbers.join(', ')) + '</td>';
+                                } else {
+                                    html += '<td style="color: #999; font-style: italic;">-</td>';
+                                }
+                            } else if (columnLabel === 'Internal ID' || columnLabel === 'Transaction Internal ID' || columnLabel === 'Invoice Internal ID') {
+                                // Make Internal ID clickable for invoices/credit memos
+                                if (cellValue) {
+                                    var recordTypeToUse = (paymentData.transactionType === 'Credit Memo') ? record.Type.CREDIT_MEMO : record.Type.INVOICE;
+                                    var transactionUrl = url.resolveRecord({
+                                        recordType: recordTypeToUse,
+                                        recordId: cellValue,
+                                        isEditMode: false
+                                    });
+                                    html += '<td><a href="' + escapeHtml(transactionUrl) + '" target="_blank">' + escapeHtml(String(cellValue)) + '</a></td>';
+                                } else {
+                                    html += '<td>' + escapeHtml(String(cellValue)) + '</td>';
+                                }
+                            } else if (shouldAllowHtmlRendering(columnLabel)) {
+                                html += '<td>' + sanitizeAllowedHtml(String(cellValue)) + '</td>';
+                            } else {
+                                html += '<td>' + escapeHtml(String(cellValue)) + '</td>';
+                            }
                         } else {
-                            html += '<td>' + escapeHtml(String(cellValue)) + '</td>';
+                            if (shouldAllowHtmlRendering(columnLabel)) {
+                                html += '<td>' + sanitizeAllowedHtml(String(cellValue)) + '</td>';
+                            } else {
+                                html += '<td>' + escapeHtml(String(cellValue)) + '</td>';
+                            }
                         }
                     } catch (e) {
                         html += '<td>Error</td>';
@@ -1382,7 +1699,7 @@ define(['N/ui/serverWidget', 'N/search', 'N/log', 'N/url', 'N/record', 'N/redire
                 // Add User Notes column if notes are enabled
                 if (enableNotes) {
                     if (recentNote && recentNote.note) {
-                        // Format: "MM/DD/YYYY - Author Name - Note text here"
+                        // Format: "MM/DD/YYYY - Author Name - Note text here [EDIT]"
                         var noteDisplay = '';
                         if (recentNote.notedate) {
                             noteDisplay += escapeHtml(recentNote.notedate) + ' - ';
@@ -1391,6 +1708,16 @@ define(['N/ui/serverWidget', 'N/search', 'N/log', 'N/url', 'N/record', 'N/redire
                             noteDisplay += escapeHtml(recentNote.author) + ' - ';
                         }
                         noteDisplay += escapeHtml(recentNote.note);
+                        
+                        // Add [EDIT] link if we have a note ID
+                        if (recentNote.id) {
+                            var noteUrl = url.resolveRecord({
+                                recordType: record.Type.NOTE,
+                                recordId: recentNote.id,
+                                isEditMode: true
+                            });
+                            noteDisplay += ' <a href="' + escapeHtml(noteUrl) + '" target="_blank" style="font-weight: bold; color: #4CAF50;">[EDIT]</a>';
+                        }
 
                         html += '<td class="note-cell">' + noteDisplay + '</td>';
                     } else {
@@ -1425,7 +1752,7 @@ define(['N/ui/serverWidget', 'N/search', 'N/log', 'N/url', 'N/record', 'N/redire
                 var invoiceNumber = '';
                 var transactionType = '';
 
-                // Extract data from columns (internal ID is not in search results, so we'll look it up)
+                // Extract data from columns
                 for (var i = 0; i < result.columns.length; i++) {
                     var column = result.columns[i];
                     var label = column.label || '';
@@ -1454,44 +1781,22 @@ define(['N/ui/serverWidget', 'N/search', 'N/log', 'N/url', 'N/record', 'N/redire
                         case 'WF Auth #':
                             data.wfAuthNumber = value;
                             break;
+                        case 'Internal ID':
+                        case 'Transaction Internal ID':
+                        case 'Invoice Internal ID':
+                            data.invoiceId = value;
+                            break;
+                        case 'Sales Order Internal ID':
+                            data.salesOrderId = value;
+                            break;
                         default:
                             break;
                     }
                 }
-
-                // Look up the internal ID using the invoice/credit memo number
-                if (invoiceNumber && transactionType) {
-                    try {
-                        var recordType = (transactionType === 'Credit Memo') ? search.Type.CREDIT_MEMO : search.Type.INVOICE;
-
-                        var tranSearch = search.create({
-                            type: recordType,
-                            filters: [
-                                ['tranid', 'is', invoiceNumber],
-                                'AND',
-                                ['mainline', 'is', 'T']
-                            ],
-                            columns: ['internalid']
-                        });
-
-                        var searchResults = tranSearch.run().getRange({ start: 0, end: 1 });
-
-                        if (searchResults && searchResults.length > 0) {
-                            data.invoiceId = searchResults[0].getValue('internalid');
-                        } else {
-                            log.error('Could not find internal ID in lookup', {
-                                invoiceNumber: invoiceNumber,
-                                transactionType: transactionType
-                            });
-                        }
-                    } catch (lookupError) {
-                        log.error('Error looking up internal ID', {
-                            error: lookupError.message,
-                            stack: lookupError.stack,
-                            invoiceNumber: invoiceNumber,
-                            transactionType: transactionType
-                        });
-                    }
+                
+                // Fallback to result.id if no internal ID found in columns
+                if (!data.invoiceId) {
+                    data.invoiceId = result.id;
                 }
             } else if (actionType === 'deposit') {
                 // Keep existing deposit logic using mapDepositColumns
@@ -1590,7 +1895,9 @@ define(['N/ui/serverWidget', 'N/search', 'N/log', 'N/url', 'N/record', 'N/redire
             amount: '',
             wfAuthId: result.id,
             location: '',
-            wfAuthNumber: ''
+            wfAuthNumber: '',
+            salesOrderTotal: '',
+            customerDepositTotal: ''
         };
 
         try {
@@ -1618,6 +1925,16 @@ define(['N/ui/serverWidget', 'N/search', 'N/log', 'N/url', 'N/record', 'N/redire
                     default:
                         break;
                 }
+            }
+
+            // Get Sales Order Total if we have a Sales Order ID
+            if (mappedData.salesOrderId) {
+                var soTotal = getSalesOrderTotal(mappedData.salesOrderId);
+                mappedData.salesOrderTotal = soTotal.toFixed(2);
+                
+                // Get Applied Customer Deposits Total
+                var cdTotal = getAppliedCustomerDeposits(mappedData.salesOrderId);
+                mappedData.customerDepositTotal = cdTotal.toFixed(2);
             }
 
         } catch (e) {
